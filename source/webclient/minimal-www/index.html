@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!-- MINI identity — MUST run before everything (the buildId check below + main.js
+       bundle-init read window.__MINI__). build-web also injects this, but its
+       presence here guarantees it even if the build's `includes('window.__MINI__')`
+       guard is fooled by the `=== true` checks further down. -->
+  <script>window.__bundle="minimal";</script>
+  <title>UO Nexus — Multiclient WebAssembly</title>
+  <meta charset="UTF-8">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2214%22%20fill=%22%230d0d0f%22/%3E%3Cpath%20d=%22M13%2010%20h9%20v20%20l19%20-20%20h10%20v44%20h-9%20V34%20L23%2054%20H13%20Z%22%20fill=%22%23ffd43b%22/%3E%3C/svg%3E">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="referrer" content="no-referrer">
+  <!-- 'unsafe-eval' is required ONLY so the JS-macro engine can run user scripts;
+       those run isolated in a sandbox="allow-scripts" null-origin iframe whose own
+       default-src 'none' blocks their network/DOM access. The page already allows
+       'unsafe-inline' scripts, so adding 'unsafe-eval' does not meaningfully widen
+       the attack surface. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'unsafe-inline' https://static.cloudflareinsights.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.discordapp.com https:; font-src 'self'; connect-src 'self' ws: wss: https:; base-uri 'none'; object-src 'none';">
+  <meta name="cuo-dev-mode" content="enabled">
+  <script>
+    (async () => {
+      const KEY = 'cuo:buildId';
+      const RELOADS_KEY = 'cuo:buildIdReloads';
+      try {
+        const recent = JSON.parse(sessionStorage.getItem(RELOADS_KEY) || '[]')
+          .filter(t => Date.now() - t < 10000);
+        if (recent.length >= 2) {
+          console.warn('[boot] build-id mismatch reloaded too often; falling through');
+          return;
+        }
+        const r = await fetch('/build-id.txt?t=' + Date.now(), {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(2000),
+        });
+        if (!r.ok) return;
+        const cur = (await r.text()).trim();
+        if (!cur) return;
+        const last = localStorage.getItem(KEY);
+        if (last && last !== cur) {
+          localStorage.setItem(KEY, cur);
+          sessionStorage.setItem(RELOADS_KEY, JSON.stringify([...recent, Date.now()]));
+          location.reload();
+        } else if (!last) {
+          localStorage.setItem(KEY, cur);
+        }
+      } catch { /* offline / missing / timeout — fall through */ }
+    })();
+  </script>
+  <link rel="preload" id="webassembly" />
+  <script type="importmap"></script>
+  <!-- fase3 (2026-06-28): the mini-only runtime — ModeManager, touch controls,
+       asset profiles, use-case resolution, overlay viewport, audio bridge, the TBH
+       HUD, … Classic script so it runs BEFORE the main.js module: it sets up
+       window.__miniHooks / window.__miniReady + the layout ModeManager early. ONLY
+       the mini bundle loads it (cuo/tuo never do → zero dead code in their bundles).
+       Fingerprinted by the build like rail.js. main.js is now the SHARED launcher. -->
+  <!-- minimal-boot.js reads config.json and sets window.__MINIMAL_SERVER BEFORE main.js is
+       evaluated: this build has no server registry and no picker, so the shard must already
+       be resolved by the time the module runs. Deliberately NOT fingerprinted - it is the
+       file a self-hoster is pointed at, and a hashed name makes that instruction useless. -->
+  <script src="minimal-boot.js"></script>
+  <script type='module' src="main#[.{fingerprint}].js"></script>
+  <!-- Vertical rail UI (shared by CUO + TUO — single source, synced at build).
+       rail.js is fingerprinted by the build
+       (#[.{fingerprint}] -> rail.<hash>.js). rail.css is PLAIN-named — the build
+       does NOT fingerprint .css — so it MUST be served no-cache by nginx
+       (`location ~ /rail\.css$`). It was previously served `immutable` (max-age=1y),
+       which left every returning browser on a STALE rail.css after each redeploy
+       (new rail.js DOM + old styles = broken look). rail.js is self-contained —
+       listens for cuo:gamescene-active, no main.js coupling. -->
+  <link rel="stylesheet" href="rail.css">
+  <script src="rail#[.{fingerprint}].js" defer></script>
+  <style>
+    @font-face {
+      font-family: 'Fondamento';
+      src: url('Fondamento-Regular.ttf') format('truetype');
+      font-weight: normal; font-style: normal; font-display: swap;
+    }
+    /* UO server-list gothic font — mirrors play.classicuo.org's UOFont so
+       shard names read in the same typeface as the official picker. */
+    @font-face {
+      font-family: 'UOFont';
+      src: url('uofont.ttf') format('truetype');
+      font-weight: normal; font-style: normal; font-display: swap;
+    }
+
+    html, body {
+      margin: 0; padding: 0; height: 100%; width: 100%;
+      overflow: hidden; color: #d7dae0;
+      font-family: "Segoe UI", system-ui, -apple-system, "Roboto",
+                   "Helvetica Neue", sans-serif;
+      background-color: #000;
+      background-image: url('uo-background.jpg');
+      background-attachment: fixed;
+      background-size: cover;
+      background-position: bottom 0 right 0;
+    }
+    /* Subtle vignette over the background photo. */
+    body::before {
+      content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1;
+      background: rgba(0,0,0,0.08);
+    }
+    #stage {
+      position: relative; height: 100%; width: 100%;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 2;
+    }
+    #stage:fullscreen {
+      width: 100vw; height: 100vh;
+      background: #07060a;
+    }
+    #banner {
+      position: fixed; top: 0; left: 0; right: 0;
+      text-align: center;
+      font-family: 'Fondamento', serif;
+      letter-spacing: 0.25em;
+      color: rgba(255,255,255,0.88);
+      font-size: 12px; pointer-events: none; z-index: 3;
+      padding: 10px 0 18px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.50) 0%, transparent 100%);
+    }
+    #footer {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      text-align: center;
+      font-size: 11px; color: rgba(255,255,255,0.70); letter-spacing: 0.15em;
+      text-transform: uppercase; pointer-events: none; z-index: 3;
+      padding: 16px 0 10px;
+      background: linear-gradient(to top, rgba(0,0,0,0.50) 0%, transparent 100%);
+    }
+    #footer a { color: rgba(255,255,255,0.80); text-decoration: none; pointer-events: auto; cursor: pointer; }
+    body.in-game,
+    body.in-game * { cursor: none !important; }
+    body.in-game #gamemode-toggle,
+    body.in-game #gamemode-toggle *,
+    body.in-game #discord-widget,
+    body.in-game #discord-widget *,
+    body.in-game [data-pointer="auto"],
+    body.in-game [data-pointer="auto"] * { cursor: pointer !important; }
+    body.in-game input,
+    body.in-game textarea { cursor: text !important; }
+    /* In-game the rail's User button (top-right vertical bar) IS the account
+       entry — clicking the floating widget just calls window.UORail.open('user'),
+       the same panel. The fixed top-right widget therefore overlaps the rail's
+       User icon, so hide it in-game (same precedent as #gamemode-toggle). The
+       widget keeps its dropdown out-of-game. !important overrides the inline
+       display:flex set by _discordWireToolbar(). */
+    body.in-game #discord-widget { display: none !important; }
+    #canvas {
+      display: block; background: #000;
+      cursor: none;
+      border: 2px solid #2a241a;
+      box-shadow:
+        inset 0 0 0 1px #493a22,
+        0 0 0 4px #120f09,
+        0 0 40px rgba(0,0,0,0.8),
+        0 0 120px rgba(201,169,105,0.08);
+      border-radius: 2px;
+    }
+    /* Hide the black canvas rectangle while the loader/SSO is active */
+    #stage:has(#loader:not(.hidden)) #canvas { visibility: hidden; }
+
+    /* Loader overlay — pointer-events:none lets the canvas receive events
+       once the loader fades; interactive children opt back in via their own
+       pointer-events:auto rules. */
+    #loader {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      /* v0.7.7: `safe center` — centra si la caja interior cabe en el
+         viewport, si no fall-back a `start` (caja arriba, banner
+         visible). El operator reportó que el panel "Pick a shard"
+         se solapaba con banner+footer cuando había muchos shards
+         porque `center` empuja overflow simétrico arriba+abajo. La
+         `safe`-fallback elimina ese caso sin afectar viewports
+         normales donde la caja cabe. Pair con #server-picker
+         max-height + .picker-list overflow-y: auto. */
+      align-items: safe center;
+      justify-content: safe center;
+      gap: 18px;
+      background: transparent;
+      transition: opacity 500ms ease-out;
+      z-index: 10; pointer-events: none;
+      /* Si la caja interior excede viewport y aun así no encaja con
+         el max-height del picker, el propio loader se vuelve
+         scrollable como red de seguridad final. Solo se ve un
+         scrollbar cuando hay verdadero overflow — viewports normales
+         siguen sin scrollbar. */
+      overflow-y: auto;
+    }
+    #loader.hidden { opacity: 0; visibility: hidden; }
+    #loader .title {
+      font-family: 'Fondamento', serif;
+      font-size: 42px; font-weight: 900; letter-spacing: 0.04em;
+      color: #ffd57e;
+      text-shadow: 0 2px 3px black;
+      margin-bottom: 2px;
+    }
+    #loader .subtitle {
+      font-family: 'Fondamento', serif;
+      font-size: 13px; color: rgba(255,255,255,0.70); letter-spacing: 0.38em;
+      text-transform: uppercase;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    #loader .sso-tagline {
+      font-size: 12px; color: rgba(255,255,255,0.55);
+      margin: 8px 0 0; line-height: 1.5;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    }
+    #loader .bar {
+      width: 420px; max-width: 80vw; height: 8px;
+      background: #1d1912; border: 1px solid #302716; border-radius: 999px;
+      overflow: hidden; position: relative; margin-top: 6px;
+    }
+    #loader .bar .fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #6b4e20 0%, #e8c98a 50%, #6b4e20 100%);
+      transition: width 120ms ease-out;
+      box-shadow: 0 0 12px rgba(232,201,138,0.4);
+    }
+    #loader .status {
+      font-size: 14px; color: #c8ba96; min-height: 20px;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    }
+    #loader .detail {
+      font-size: 12px; color: #7a6e50;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      min-height: 15px;
+    }
+    /* Retail look: just the four white corner brackets — no background,
+       no border, no box. Drop-shadow gives the strokes a dark halo so they
+       remain readable on bright AND dark canvas content. */
+    #gamemode-toggle {
+      position: absolute; right: 12px; bottom: 12px;
+      z-index: 20;
+      width: 28px; height: 28px;
+      padding: 0; margin: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      user-select: none;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.85;
+      transition: opacity 120ms ease-out;
+    }
+    #gamemode-toggle:hover,
+    #gamemode-toggle[aria-pressed="true"] { opacity: 1; }
+    #gamemode-toggle svg {
+      display: block;
+      filter: drop-shadow(0 0 2px rgba(0,0,0,1)) drop-shadow(0 1px 2px rgba(0,0,0,0.85));
+    }
+    #stage:fullscreen #gamemode-toggle { bottom: 16px; right: 16px; }
+
+    /* ── SSO gate panel ─────────────────────────────────────────────── */
+    #sso-panel {
+      display: none; flex-direction: column; align-items: center; gap: 18px;
+      text-align: center; pointer-events: auto; width: 420px; max-width: 92vw;
+      background: rgba(8, 6, 4, 0.30);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 213, 126, 0.20);
+      border-radius: 16px;
+      padding: 44px 48px 48px;
+      box-shadow: 0 8px 56px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,213,126,0.08);
+    }
+    .sso-desc {
+      font-size: 15px; color: rgba(255,255,255,0.88); line-height: 1.85; margin: 0;
+      text-shadow: 0 1px 5px rgba(0,0,0,0.95);
+    }
+    .sso-desc strong { color: #ffffff; }
+    /* All four buttons inside #sso-panel share the same width + alignment
+       so they read as a coherent stack. Vary only the colour palette to
+       signal hierarchy (Sign-in primary CTA → guest secondary → meta
+       buttons subdued). The fixed width also makes the SVG icons land
+       in predictable positions across the buttons. */
+    /* v0.5.53: #play-game added so the logged-in welcome panel
+       (which uses #play-game instead of #sso-continue + .discord-btn)
+       aligns at the same 260px width as the new GitHub/Discord footer
+       links. Without this, the four buttons in the welcome variant
+       would be width-mismatched. */
+    .discord-btn, .discord-invite-btn, .github-btn, #sso-continue, #play-game {
+      width: 260px;
+      box-sizing: border-box;
+      justify-content: center;
+      align-items: center;
+      display: inline-flex;
+      gap: 10px;
+    }
+    .discord-btn {
+      padding: 10px 26px;
+      background: #5865F2; color: #fff;
+      border-radius: 6px; text-decoration: none;
+      font-size: 15px; font-weight: 600;
+      transition: background 120ms ease-out, box-shadow 120ms ease-out;
+      cursor: pointer;
+      box-shadow: 0 2px 20px rgba(88,101,242,0.55), 0 1px 4px rgba(0,0,0,0.6);
+    }
+    .discord-btn:hover { background: #4752c4; box-shadow: 0 2px 28px rgba(88,101,242,0.75); }
+    /* Client selector on the landing. Two options with the current one marked, rather than one
+       button describing what it would do: a label like "TazUO — switch to ClassicUO" makes the
+       reader deduce the current state from a sentence about the other one. */
+    .client-choice { display: flex; align-items: center; gap: 10px; margin: 2px 0 4px; }
+    .client-choice-label { font-size: 11px; color: rgba(255,255,255,0.5); letter-spacing: 0.2em; text-transform: uppercase; }
+    .client-choice-opts { display: inline-flex; border: 1px solid rgba(255,255,255,0.28); border-radius: 6px; overflow: hidden; }
+    .client-choice-opt {
+      background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.72);
+      border: none; padding: 7px 16px; font-size: 13px; cursor: pointer;
+      transition: background 120ms, color 120ms;
+    }
+    .client-choice-opt + .client-choice-opt { border-left: 1px solid rgba(255,255,255,0.28); }
+    .client-choice-opt:hover:not(.is-current) { background: rgba(255,255,255,0.14); color: #fff; }
+    .client-choice-opt.is-current { background: rgba(255,213,126,0.22); color: #ffd57e; cursor: default; font-weight: 600; }
+    .sso-divider { font-size: 11px; color: rgba(255,255,255,0.5); letter-spacing: 0.4em; text-transform: uppercase; }
+    #sso-continue {
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.35); color: rgba(255,255,255,0.80);
+      border-radius: 4px; padding: 8px 18px;
+      font-size: 13px;
+      cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms;
+    }
+    #sso-continue:hover { color: #fff; border-color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.14); }
+    .sso-cache-note {
+      font-size: 12px; color: rgba(255,255,255,0.55); line-height: 1.65; margin: 0;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    /* GitHub button — visually subdued (dark grey, GitHub-like) so it
+       sits below the primary Discord CTA without competing for attention.
+       The SOON badge uses the page's existing gold accent (#ffd57e) to
+       inherit the visual language of the welcome panel. */
+    .github-btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 7px 16px;
+      background: rgba(36, 41, 47, 0.85); color: rgba(255,255,255,0.92);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 6px; text-decoration: none;
+      font-size: 13px; font-weight: 500;
+      transition: background 120ms ease-out, border-color 120ms ease-out;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    .github-btn:hover { background: rgba(54, 60, 66, 0.95); border-color: rgba(255,255,255,0.32); }
+    .github-btn svg { fill: currentColor; flex-shrink: 0; }
+    .github-btn .soon-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+      padding: 2px 7px; border-radius: 999px;
+      background: rgba(255,213,126,0.16); color: #ffd57e;
+      border: 1px solid rgba(255,213,126,0.45);
+      text-transform: uppercase;
+    }
+    .discord-invite-btn {
+      padding: 7px 16px;
+      background: #5865F2; color: #fff;
+      border-radius: 6px; text-decoration: none;
+      font-size: 13px; font-weight: 500;
+      transition: background 120ms ease-out, box-shadow 120ms ease-out;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+    }
+    .discord-invite-btn:hover { background: #4752c4; box-shadow: 0 2px 14px rgba(88,101,242,0.55); }
+    /* SVG icons inside any of the buttons. flex-shrink:0 prevents the
+       icon from being squeezed when the label text is long;
+       overflow:visible is a defensive guard against icons whose path
+       extends a hair past their nominal viewBox (anti-alias rounding,
+       sub-pixel paths). Without it Chrome on some DPI clips the right
+       edge of the Discord logo by a pixel. */
+    .discord-btn svg, .discord-invite-btn svg, .github-btn svg {
+      fill: currentColor; flex-shrink: 0; overflow: visible;
+    }
+    /* v0.7.7 — bare-logo social icons (operator dropped the circles).
+       Two SVG glyphs side-by-side, no chrome around them; hover only
+       brightens the colour + lifts a touch. Tooltips + aria-label
+       still carry the label for accessibility. */
+    .social-icons-row {
+      display: flex; align-items: center; justify-content: center;
+      gap: 22px; margin-top: 10px;
+    }
+    .social-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      color: rgba(255,255,255,0.72);
+      text-decoration: none;
+      pointer-events: auto;
+      transition: transform 140ms ease-out, color 140ms ease-out, filter 140ms ease-out;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+    }
+    .social-icon:hover { transform: scale(1.12); color: #fff; }
+    /* 39px = 26 x 1.5 (operator 2026-07-16). Discord is the ONLY icon in this row
+       now that the GitHub one is gone, so it carries the footer alone. */
+    .social-icon svg { width: 39px; height: 39px; fill: currentColor; overflow: visible; }
+    /* Per-platform hover tint (brand colour). Keep subtle — no background
+       fill, only the icon strokes pick up the colour. */
+    .social-icon.discord-icon:hover { color: #5865F2; }
+    .social-icon.github-icon:hover { color: #fff; }
+    .discord-byline {
+      display: block; font-size: 11px; color: rgba(255,255,255,0.55);
+      margin-top: 6px; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+
+    /* Client picker — gateway panel shown on uonexus.com after login
+       so the user can choose between the WebGL (Stable) and WebGPU
+       (Alpha) clients. Hidden on any other hostname. */
+    .client-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.12em;
+      padding: 3px 10px; border-radius: 999px; text-transform: uppercase;
+    }
+    .badge-stable {
+      background: rgba(68,189,110,0.16); color: #7ee3a0;
+      border: 1px solid rgba(68,189,110,0.35);
+    }
+    .badge-alpha {
+      background: rgba(255,180,50,0.16); color: #ffd57e;
+      border: 1px solid rgba(255,180,50,0.35);
+    }
+
+    /* ── Server picker — shown after SSO when ≥2 shards are registered ── */
+    /* v0.7.5: max-height cap + inner-scroll layout — picker-list child
+       absorbs the leftover space + scrolls internally so the box never
+       outgrows the viewport regardless of shard count.
+       v0.7.7: cap tightened from (100vh - 100px) to (100vh - 160px) and
+       padding/gaps/margins compacted (~50px slimmer box overall) — the
+       previous values left the box only ~20px clear of banner+footer on
+       1280×800 laptops, which `safe center` still rendered as "centered
+       AND touching both edges". The new headroom guarantees ≥80px of
+       gap between the box and the top banner / bottom footer at any
+       common viewport height. */
+    /* All direct children of #server-picker EXCEPT the cards list are
+       pinned at their natural height (no flex-shrink). The list itself
+       absorbs the available space and scrolls. */
+
+
+
+    /* Status pill: small uppercase tag showing whether the proxy was
+       able to TCP-connect to the shard's host:port within ~2s. Green
+       = online, red = offline. Cached server-side 30s. */
+    /* Latency badge — sits next to the ON/OFF pill, neutral styling so
+       it's read as informational rather than as another semantic state. */
+    /* Disable click on offline shards — clicking would open a WS that
+       fails, with the user wondering why. The card stays visible so
+       operators see the offline indicator. */
+
+    /* v0.8.43 hosting badges. Sponsored = we host + recommend (gold);
+       Community = owner self-hosted (neutral grey). */
+    /* Region / era filter row above the card list. */
+    .picker-filters {
+      display: flex; gap: 10px; width: 100%; margin-bottom: 2px; flex-wrap: wrap;
+    }
+
+    /* ── Mobile-only landing — game is desktop-only for now ────────────
+       Triggered by a script-side mobile UA / pointer:coarse check that
+       toggles `body.mobile-view`. The CSS below hides every desktop
+       chrome (loader, canvas, ann panel, top-right discord widget) and
+       shows a minimal "desktop only" splash with just the Discord +
+       GitHub buttons. */
+    #mobile-splash {
+      display: none;
+      position: fixed; inset: 0;
+      background: linear-gradient(180deg, #0a0805 0%, #1a1208 100%);
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 20px; padding: 32px 24px; text-align: center;
+      z-index: 100;
+    }
+    body.mobile-view #mobile-splash { display: flex; }
+    /* Hide every desktop element when the mobile view is active. We keep
+       #stage itself visible because #mobile-splash is rendered inside it
+       (positioned: fixed, so the parent's layout doesn't matter). */
+    body.mobile-view #canvas,
+    body.mobile-view #pointer-lock-hint,
+    body.mobile-view #loader,
+    body.mobile-view #discord-widget,
+    body.mobile-view #gamemode-toggle,
+    body.mobile-view #banner { display: none !important; }
+
+    #mobile-splash .title {
+      font-family: 'Fondamento', serif; font-size: 38px; color: #ffd57e;
+      text-shadow: 0 2px 5px rgba(0,0,0,0.9);
+      letter-spacing: 0.06em;
+    }
+    #mobile-splash .subtitle {
+      font-family: 'Fondamento', serif; font-size: 18px;
+      color: rgba(255,255,255,0.85); margin-top: -12px;
+    }
+    #mobile-splash .pitch {
+      font-size: 14px; line-height: 1.55; max-width: 360px;
+      color: rgba(255,255,255,0.78);
+    }
+    #mobile-splash .pitch strong { color: #ffd57e; }
+    #mobile-splash .button-row {
+      display: flex; flex-direction: column; gap: 12px;
+      width: 100%; max-width: 280px;
+      margin-top: 18px;
+    }
+    #mobile-splash .discord-invite-btn,
+    #mobile-splash .github-btn {
+      width: 100%;
+      padding: 12px 18px;
+      font-size: 14px;
+    }
+
+    /* Welcome badge — same glass panel as #sso-panel, shown briefly for returning users. */
+    #sso-user {
+      /* v0.5.53: gap matches #sso-panel (18px not 14px) so the four
+         vertically-stacked elements in the welcome variant read at the
+         same rhythm as the sign-in variant. */
+      display: none; flex-direction: column; align-items: center; gap: 18px;
+      text-align: center; pointer-events: auto; width: 420px; max-width: 92vw;
+      background: rgba(8, 6, 4, 0.30);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 213, 126, 0.20);
+      border-radius: 16px; padding: 44px 48px 40px;
+      box-shadow: 0 8px 56px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,213,126,0.08);
+    }
+    .sso-welcome {
+      font-size: 14px;
+      color: rgba(255,255,255,0.70); text-shadow: 0 1px 5px rgba(0,0,0,0.9);
+    }
+    .discord-tag {
+      font-family: 'Fondamento', serif; font-size: 26px; letter-spacing: 0.04em;
+      color: #ffd57e; text-shadow: 0 2px 3px black;
+    }
+    /* Play button: same minimal-glass language as #sso-continue,
+       gold accent so it reads as a positive CTA. */
+    #play-game {
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,213,126,0.45); color: rgba(255,213,126,0.92);
+      border-radius: 4px; padding: 8px 28px;
+      font-size: 14px; letter-spacing: 0.06em; font-weight: 500;
+      cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms;
+    }
+    #play-game:hover { color: #fff; border-color: rgba(255,213,126,0.85); background: rgba(255,213,126,0.16); }
+    #play-game:disabled { opacity: 0.55; cursor: progress; }
+    .discord-signout {
+      font-size: 12px;
+      color: rgba(255,255,255,0.40); text-decoration: none; cursor: pointer;
+    }
+    .discord-signout:hover { color: rgba(255,255,255,0.70); }
+
+    /* Loading section — revealed after SSO gate is dismissed. */
+    #loading-section {
+      display: none; flex-direction: column; align-items: center; gap: 12px;
+      width: 420px; max-width: 92vw;
+      background: rgba(8, 6, 4, 0.30);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 213, 126, 0.20);
+      border-radius: 16px; padding: 36px 48px 40px;
+      box-shadow: 0 8px 56px rgba(0,0,0,0.4);
+    }
+
+    /* ── Discord widget — top-right floating avatar + dropdown menu. ── */
+    #discord-widget {
+      position: fixed; top: 12px; right: 12px;
+      z-index: 30; pointer-events: auto;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    #discord-widget-btn {
+      position: relative;
+      width: 42px; height: 42px; border-radius: 50%;
+      background: #5865F2; border: 2px solid rgba(255,255,255,0.25);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      font-family: 'Fondamento', serif; font-size: 15px; font-weight: bold; color: #fff;
+      transition: border-color 150ms, box-shadow 150ms, transform 150ms;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.60);
+      flex-shrink: 0;
+    }
+    #discord-widget-btn img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover; border-radius: 50%;
+    }
+    #discord-widget-btn:hover {
+      border-color: rgba(255,255,255,0.70);
+      box-shadow: 0 4px 20px rgba(88,101,242,0.65);
+      transform: scale(1.06);
+    }
+    #discord-menu {
+      position: fixed; top: 62px; right: 12px; width: 240px;
+      background: rgba(10,8,6,0.90);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,213,126,0.12);
+      border-radius: 12px;
+      padding: 0; overflow: hidden;
+      transform-origin: top right;
+      transition: transform 160ms ease-out, opacity 160ms ease-out;
+    }
+    #discord-menu.hidden { transform: scale(0.92) translateY(-8px); opacity: 0; pointer-events: none; }
+    .dm-header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 20px 18px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+    .dm-avatar-lg {
+      position: relative;
+      width: 40px; height: 40px; border-radius: 50%; background: #5865F2;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      font-family: 'Fondamento', serif; font-size: 15px; font-weight: bold; color: #fff;
+      overflow: hidden;
+    }
+    .dm-avatar-lg img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover; border-radius: 50%;
+    }
+    .dm-user-name { font-size: 13px; font-weight: 600; color: #fff; }
+    .dm-user-sub { font-size: 10px; color: rgba(255,255,255,0.38); letter-spacing: 0.12em; margin-top: 2px; text-transform: uppercase; }
+    .dm-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 12px 18px; background: none; border: none; text-align: left;
+      cursor: pointer; font-size: 13px; text-decoration: none;
+      color: rgba(255,255,255,0.75); transition: background 100ms, color 100ms;
+    }
+    /* Fixed-width icon column so every item's label starts at the same x,
+       regardless of glyph width (the ⚙ dingbat is narrower than the 💾/🗑
+       emoji). text-decoration:none above kills the <a>'s default underline. */
+    .dm-ic { flex-shrink: 0; width: 20px; text-align: center; font-size: 15px; line-height: 1; }
+    .dm-item:hover { background: rgba(255,255,255,0.07); color: #fff; }
+    .dm-item.dm-danger { color: rgba(255,110,90,0.85); }
+    .dm-item.dm-danger:hover { background: rgba(255,80,60,0.10); color: #ff7060; }
+    .dm-sep { height: 1px; background: rgba(255,255,255,0.07); margin: 4px 0; }
+
+    /* ── Browser compatibility warning modal ─────────────────────────────
+       Shown for non-Chromium browsers; dismiss stored in sessionStorage. */
+    #browser-warn {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(7, 6, 10, 0.88);
+    }
+    #browser-warn.hidden { display: none; }
+    .warn-box {
+      background: #1a1510; border: 1px solid #493a22;
+      border-radius: 4px; padding: 28px 32px; max-width: 420px;
+      color: #b8aa88; text-align: center;
+      box-shadow: 0 0 60px rgba(0,0,0,0.9);
+    }
+    .warn-title { font-size: 16px; font-variant: small-caps; letter-spacing: 0.25em; color: #e8c98a; margin-bottom: 14px; }
+    .warn-box p { font-size: 12px; line-height: 1.65; margin: 0 0 10px; }
+    .warn-box strong { color: #e8c98a; }
+    .warn-dismiss {
+      margin-top: 18px; padding: 7px 20px;
+      background: rgba(73,58,34,0.75); color: #c9a969;
+      border: 1px solid #493a22; border-radius: 3px;
+      font: inherit; font-size: 12px; font-variant: small-caps;
+      letter-spacing: 0.15em; cursor: pointer;
+      transition: background 120ms ease-out;
+    }
+    .warn-dismiss:hover { background: rgba(73,58,34,1); color: #e8c98a; }
+
+    #pointer-lock-hint {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 18px;
+      background: rgba(29, 25, 18, 0.85);
+      color: #e8c98a;
+      border: 1px solid #493a22;
+      border-radius: 3px;
+      font: inherit; font-size: 12px;
+      font-variant: small-caps; letter-spacing: 0.15em;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 180ms ease-out;
+      z-index: 25;
+    }
+    body[data-lock-state="released"] #pointer-lock-hint { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="banner">WebAssembly multi-client &nbsp;·&nbsp; fan-made Ultima Online ports</div>
+
+  <div id="stage">
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="pointer-lock-hint">Click to re-engage input</div>
+
+    <button id="gamemode-toggle"
+            type="button"
+            aria-pressed="false"
+            style="display:none"
+            data-tip="Game Mode — fullscreen + capture F1-F24 / numpad / Ctrl+combos">
+      <svg width="20" height="20" viewBox="0 0 22 22" fill="none"
+           stroke="white" stroke-width="2.6" stroke-linecap="square">
+        <path d="M2 7  L2 2  L7 2"/>
+        <path d="M15 2 L20 2 L20 7"/>
+        <path d="M2 15 L2 20 L7 20"/>
+        <path d="M15 20 L20 20 L20 15"/>
+      </svg>
+    </button>
+
+    <!-- Mobile-only landing. Shown when the page detects a phone/tablet
+         UA + coarse pointer + narrow viewport. The game itself is
+         desktop-only for now (touch input + on-screen keyboard layout
+         work has not been done), so the only thing the page offers
+         on mobile is Discord + GitHub. -->
+    <div id="mobile-splash">
+      <div class="title">UO Nexus WebAssembly</div>
+      <div class="subtitle">Desktop-only for now</div>
+      <p class="pitch">
+        The <strong>WebAssembly</strong> client needs a keyboard, a
+        mouse, and a desktop-class browser. Touch and on-screen
+        keyboard support are on the roadmap but not ready yet.
+        Bookmark this page and come back from a PC, or join the
+        Discord to follow updates.
+      </p>
+      <div class="button-row">
+        <a href="#" data-selfhost="set-your-discord-invite"
+           class="discord-invite-btn"
+           target="_blank" rel="noopener noreferrer">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20.317 4.369A19.79 19.79 0 0 0 16.558 3a13.7 13.7 0 0 0-.617 1.265 18.27 18.27 0 0 0-5.487 0A12.74 12.74 0 0 0 9.836 3 19.74 19.74 0 0 0 6.077 4.371 20.18 20.18 0 0 0 2.65 16.65a19.93 19.93 0 0 0 6.066 3.063 14.45 14.45 0 0 0 1.296-2.108 12.85 12.85 0 0 1-2.04-.98c.171-.124.339-.255.502-.39a14.27 14.27 0 0 0 12.354 0c.165.137.333.268.503.391a12.85 12.85 0 0 1-2.043.981 14.5 14.5 0 0 0 1.296 2.107 19.93 19.93 0 0 0 6.067-3.062 20.05 20.05 0 0 0-3.434-12.282zM8.02 14.835c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.957-2.428 2.157-2.428 1.2 0 2.176 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419zm7.974 0c-1.183 0-2.158-1.085-2.158-2.419 0-1.333.957-2.428 2.158-2.428 1.2 0 2.175 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419z"/>
+          </svg>
+          <span>Join uonexus on Discord</span>
+        </a>
+        <a href="#" data-selfhost="set-your-repo-url"
+           class="github-btn"
+           target="_blank" rel="noopener noreferrer">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          <span>View on GitHub</span>
+        </a>
+      </div>
+    </div>
+
+    <div id="loader">
+      <!-- SSO gate: shown to unauthenticated users before loading. -->
+      <div id="sso-panel">
+        <!-- Title baked into the bundle. applyServerConfig() reads
+             data-base and appends the version, so the rendered text
+             becomes "<data-base> vX.Y.Z". data-base wins over the
+             proxy /api/config.serverName (see main.js). -->
+
+        <div class="title" data-base="UO Nexus WebAssembly">UO Nexus WebAssembly</div>
+        <p class="sso-tagline">a browser port of fan-made Ultima Online clients, running entirely in WebAssembly</p>
+        <p class="sso-desc">
+          Sign in with <strong>Discord</strong> to save your server settings
+          across sessions, clients and browser updates.
+        </p>
+        <a href="/auth/discord" class="discord-btn">&#9654; &nbsp;Sign in with Discord</a>
+        <span class="sso-divider">or</span>
+        <button type="button" id="sso-continue">Continue as guest</button>
+        <p class="sso-cache-note">
+          Guest settings are kept in your browser cache only —<br>
+          a new client version will reset them.
+        </p>
+        <!-- v0.7.5: full-width "View on GitHub SOON" + "Join uonexus on
+             Discord" buttons replaced with compact icon-only circles
+             (Discord left, GitHub right). Tooltips carry the labels so
+             the affordance still reads. -->
+        <div class="social-icons-row">
+          <a href="#" data-selfhost="set-your-discord-invite"
+             class="social-icon discord-icon"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="Join uonexus on Discord" data-tip="Join uonexus on Discord">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20.317 4.369A19.79 19.79 0 0 0 16.558 3a13.7 13.7 0 0 0-.617 1.265 18.27 18.27 0 0 0-5.487 0A12.74 12.74 0 0 0 9.836 3 19.74 19.74 0 0 0 6.077 4.371 20.18 20.18 0 0 0 2.65 16.65a19.93 19.93 0 0 0 6.066 3.063 14.45 14.45 0 0 0 1.296-2.108 12.85 12.85 0 0 1-2.04-.98c.171-.124.339-.255.502-.39a14.27 14.27 0 0 0 12.354 0c.165.137.333.268.503.391a12.85 12.85 0 0 1-2.043.981 14.5 14.5 0 0 0 1.296 2.107 19.93 19.93 0 0 0 6.067-3.062 20.05 20.05 0 0 0-3.434-12.282zM8.02 14.835c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.957-2.428 2.157-2.428 1.2 0 2.176 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419zm7.974 0c-1.183 0-2.158-1.085-2.158-2.419 0-1.333.957-2.428 2.158-2.428 1.2 0 2.175 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419z"/>
+            </svg>
+          </a>
+          <a href="https://github.com/rootmancer/uonexus-minimal"
+             class="social-icon github-icon"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="This client is open source — view it on GitHub">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+            </svg>
+          </a>
+
+        </div>
+      </div>
+
+      <!-- (Client picker removed 2026-06-21 — the mini is single-client; showClientPicker() is gone.) -->
+
+      <!-- (Server picker removed 2026-06-21 — the mini is single-shard; showServerPicker is gone.) -->
+      <!-- Welcome badge: shown to returning users until they click PLAY.
+           Layout mirrors #sso-panel so returning + new users see the
+           same visual language (same title/subtitle/.sso-tagline/
+           sso-desc/glass-button stack + GitHub + Discord footer
+           links). v0.5.53: also adds the tagline + footer links so
+           a logged-in user sees the exact same menu items as a
+           visitor, minus the sign-in choices. -->
+      <div id="sso-user">
+        <!-- v0.5.57: same trimmed title as #sso-panel. -->
+        <div class="title" data-base="UO Nexus WebAssembly">UO Nexus WebAssembly</div>
+        <p class="sso-tagline">a browser port of fan-made Ultima Online clients, running entirely in WebAssembly</p>
+        <p class="sso-desc">
+          Welcome back, <strong id="discord-username"></strong>
+        </p>
+        <button type="button" id="play-game">&#9654; &nbsp;Play</button>
+        <a href="#" id="discord-logout" class="discord-signout">Sign out</a>
+        <!-- v0.7.5: same compact icon row as #sso-panel above. -->
+        <div class="social-icons-row">
+          <a href="#" data-selfhost="set-your-discord-invite"
+             class="social-icon discord-icon"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="Join uonexus on Discord" data-tip="Join uonexus on Discord">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20.317 4.369A19.79 19.79 0 0 0 16.558 3a13.7 13.7 0 0 0-.617 1.265 18.27 18.27 0 0 0-5.487 0A12.74 12.74 0 0 0 9.836 3 19.74 19.74 0 0 0 6.077 4.371 20.18 20.18 0 0 0 2.65 16.65a19.93 19.93 0 0 0 6.066 3.063 14.45 14.45 0 0 0 1.296-2.108 12.85 12.85 0 0 1-2.04-.98c.171-.124.339-.255.502-.39a14.27 14.27 0 0 0 12.354 0c.165.137.333.268.503.391a12.85 12.85 0 0 1-2.043.981 14.5 14.5 0 0 0 1.296 2.107 19.93 19.93 0 0 0 6.067-3.062 20.05 20.05 0 0 0-3.434-12.282zM8.02 14.835c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.957-2.428 2.157-2.428 1.2 0 2.176 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419zm7.974 0c-1.183 0-2.158-1.085-2.158-2.419 0-1.333.957-2.428 2.158-2.428 1.2 0 2.175 1.095 2.157 2.428 0 1.334-.957 2.419-2.157 2.419z"/>
+            </svg>
+          </a>
+          <a href="https://github.com/rootmancer/uonexus-minimal"
+             class="social-icon github-icon"
+             target="_blank" rel="noopener noreferrer"
+             aria-label="This client is open source — view it on GitHub">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+            </svg>
+          </a>
+
+        </div>
+      </div>
+
+      <!-- Left-edge tab column. The FAQ launcher is the only tab; revealed on
+           the landing page by main.js (wireFaqLauncher) and torn down at login
+           (hideAnnouncementsAfterLogin). -->
+      <div id="edge-tabs" style="position:fixed;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:flex-start;gap:8px;z-index:6">
+        <a id="faq-toggle" href="https://uonexus.com/faq" target="_blank" rel="noopener noreferrer" aria-label="Help &amp; FAQ"
+           style="display:none;position:relative;z-index:8;pointer-events:auto;writing-mode:vertical-rl;text-decoration:none;background:rgba(8,6,4,0.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,213,126,0.20);border-left:none;border-radius:0 12px 12px 0;box-shadow:0 4px 24px rgba(0,0,0,0.4);color:#ffd57e;font-family:'Fondamento',serif;font-size:13px;letter-spacing:0.06em;padding:14px 10px;cursor:pointer">Help &amp; FAQ</a>
+      </div>
+
+      <!-- Loading section: revealed after SSO gate is dismissed. -->
+      <div id="loading-section">
+        <div class="bar"><div class="fill" id="loader-fill"></div></div>
+        <div class="status" id="loader-status">Loading assets…</div>
+        <div class="detail" id="loader-detail">&nbsp;</div>
+        <!-- Per-file download panel (#loader-downloads) is created + styled by
+             main.js (_dlEnsurePanel) so the whole feature is self-contained in
+             the JS loader layer and ships via the fast web-only rebuild. -->
+      </div>
+
+      </div>
+  </div>
+
+  <!-- Discord widget — shown after sign-in, persists during gameplay. -->
+  <div id="discord-widget" style="display:none" aria-label="Discord account">
+    <button id="discord-widget-btn" type="button" data-tip="Discord account options">
+      <img id="dw-avatar-img" src="" alt="" crossorigin="anonymous" style="display:none">
+      <span id="dw-initial">D</span>
+    </button>
+    <div id="discord-menu" class="hidden" role="menu">
+      <div class="dm-header">
+        <div class="dm-avatar-lg" id="dm-avatar-lg">
+          <img id="dm-avatar-img-lg" src="" alt="" crossorigin="anonymous" style="display:none">
+          <span id="dm-initial-lg">D</span>
+        </div>
+        <div>
+          <div class="dm-user-name" id="dm-username"></div>
+          <div class="dm-user-sub">Discord</div>
+        </div>
+      </div>
+      <!-- v0.8.47: NO dm-sep here — the .dm-header already has a border-bottom,
+           so a separator on top of it rendered a DOUBLE bar above Server admin. -->
+      <!-- Server-admin shortcut: hidden by default; _discordWireToolbar reveals
+           it only for admins (general admins + shard owners, per /api/me).
+           Absolute /admin works from both bundles (served from the CUO root);
+           new tab keeps the game session alive. -->
+      <!-- Revealed only when GET /api/admin/gate answers 200 (see _wireAccountWidget). That route
+           is the SAME check nginx puts in front of /admin, so this cannot show an entry that then
+           404s: an admin panel a non-admin is told about is worse than one they never see. -->
+      <button class="dm-item" id="dm-admin" type="button" style="display:none">Server admin</button>
+      <!-- Cache AND GDPR erasure both live behind this one entry, because the storage modal is
+           where they were designed to live: #sm-account already carries the explanatory copy and
+           the privacy-policy link. A second "delete my account" in this menu would duplicate that
+           with less context, which is a worse place to put an irreversible action. -->
+      <button class="dm-item" id="dm-storage" type="button">Manage storage</button>
+      <div class="dm-sep"></div>
+      <button class="dm-item dm-danger" id="dm-logout" type="button">Sign out of Discord</button>
+    </div>
+  </div>
+
+  <!-- Storage Manager modal — opened from the avatar menu's "Manage storage".
+       Lists each cached shard (by gamefiles base) with its size + a per-shard
+       Delete, the total, and Delete-all. Rendered by _storageRender() in
+       main.js (textContent only — no innerHTML). -->
+  <style>
+    #storage-modal { position: fixed; inset: 0; z-index: 10050; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.55); }
+    #storage-modal.hidden { display: none; }
+    #storage-modal .sm-box { width: 460px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column; background: #1c1c22; color: #e8e8ea; border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; box-shadow: 0 18px 60px rgba(0,0,0,0.6); overflow: hidden; font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+    #storage-modal .sm-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+    #storage-modal .sm-title { font-weight: 600; font-size: 15px; }
+    #storage-modal .sm-x { background: none; border: 0; color: #aaa; font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+    #storage-modal .sm-x:hover { color: #fff; }
+    #storage-modal .sm-total { padding: 10px 16px; opacity: 0.8; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    #storage-modal .sm-list { overflow-y: auto; padding: 4px 0; flex: 1; min-height: 60px; }
+    #storage-modal .sm-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; }
+    #storage-modal .sm-row:hover { background: rgba(255,255,255,0.04); }
+    #storage-modal .sm-row-name { flex: 1; min-width: 0; }
+    #storage-modal .sm-row-name > div:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #storage-modal .sm-row-sub { font-size: 12px; opacity: 0.5; }
+    #storage-modal .sm-row-size { opacity: 0.85; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #storage-modal .sm-del { background: rgba(255,80,60,0.12); color: #ff7060; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    #storage-modal .sm-del:hover { background: rgba(255,80,60,0.22); }
+    #storage-modal .sm-del:disabled { opacity: 0.5; cursor: default; }
+    #storage-modal .sm-empty { padding: 22px 16px; opacity: 0.6; text-align: center; }
+    #storage-modal .sm-foot { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.07); display: flex; justify-content: flex-end; }
+    #storage-modal .sm-danger { background: rgba(255,80,60,0.14); color: #ff7060; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+    #storage-modal .sm-danger:hover { background: rgba(255,80,60,0.24); }
+    #storage-modal .sm-danger:disabled { opacity: 0.5; cursor: default; }
+  </style>
+  <div id="storage-modal" class="hidden" role="dialog" aria-modal="true" aria-label="Cached game data">
+    <div class="sm-box">
+      <div class="sm-head">
+        <div class="sm-title">Cached game data</div>
+        <button class="sm-x" id="sm-close" type="button" data-tip="Close" aria-label="Close">&times;</button>
+      </div>
+      <div class="sm-total" id="sm-total">Measuring…</div>
+      <div class="sm-list" id="sm-list"></div>
+      <div class="sm-foot" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <button class="sm-danger" id="sm-full-reset" type="button" data-tip="Also clears your local settings (they re-sync from Discord on next login)">Reset client (settings + cache)</button>
+        <button class="sm-danger" id="sm-delete-all" type="button">Delete all cached data</button>
+      </div>
+      <!-- GDPR account erasure — only for logged-in Discord users. -->
+      <div id="sm-account" style="display:none;padding:12px 16px;border-top:1px solid rgba(255,80,80,0.25);background:rgba(60,12,12,0.25)">
+        <div style="font-size:12px;color:rgba(255,200,200,0.85);margin-bottom:8px">Permanently erase your account &amp; all personal data this install holds (your Discord identity, your saved client settings and your synced profile files). This cannot be undone. <a href="/privacy.html" target="_blank" rel="noopener" style="color:#ffb0b0">What we store →</a></div>
+        <button class="sm-danger" id="sm-delete-account" type="button" style="width:100%">Delete my account &amp; data</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- (Guest-confirm modal removed 2026-08-25 — it was driven by showGuestConfirm(), part of
+       the shard-picker flow this build does not ship. Dead markup: its two buttons were
+       reachable by nothing. The SSO gate carries this build's own "Continue as guest"
+       (#sso-continue), so the choice itself was never lost.) -->
+
+  <!-- Browser compatibility warning -->
+  <div id="browser-warn" class="hidden" aria-modal="true" role="alertdialog">
+    <div class="warn-box">
+      <div class="warn-title" id="browser-warn-title">Browser Compatibility Notice</div>
+      <div id="browser-warn-body">
+        <p>UO Nexus WebAssembly (ClassicUO + TazUO WebAssembly) is fully tested and
+          supported on <strong>Google Chrome</strong> and <strong>Microsoft Edge</strong>.</p>
+        <p>Your browser may work, but rendering glitches, audio issues, or crashes
+          are possible. Proceed at your own risk.</p>
+      </div>
+      <button class="warn-dismiss" id="browser-warn-ok">I Understand — Continue</button>
+    </div>
+  </div>
+
+  <script>
+    // Browser detection — runs before main.js loads.
+    // Supported: Google Chrome + Microsoft Edge (Chromium). Everything else
+    // gets a one-time-per-session warning. ?showcompat=1 forces the modal.
+    (function checkCapabilities() {
+      // 🚨 The mini keeps its OWN index.html, so this block exists TWICE on purpose. Editing
+      // only shared-www leaves the mini without it and the build still succeeds — invisible
+      // unless the built artefact is grepped. See the same note in shared-www/index.html for
+      // why these three requirements and not more.
+      try {
+        var missing = [];
+        if (typeof WebAssembly === 'undefined') missing.push('WebAssembly');
+        if (typeof SharedArrayBuffer === 'undefined') missing.push('SharedArrayBuffer (multi-threading)');
+        try {
+          var c = document.createElement('canvas');
+          if (!c.getContext('webgl2')) missing.push('WebGL2 (graphics)');
+        } catch (e) { missing.push('WebGL2 (graphics)'); }
+
+        console.log('[compat] capabilities missing=' + (missing.length ? missing.join(', ') : 'none'));
+        if (!missing.length) return;
+
+        var modal = document.getElementById('browser-warn');
+        var title = document.getElementById('browser-warn-title');
+        var body = document.getElementById('browser-warn-body');
+        if (!modal || !title || !body) return;
+
+        title.textContent = 'This computer cannot run the game client';
+        body.textContent = '';
+        var p1 = document.createElement('p');
+        p1.textContent = 'Your browser is missing: ' + missing.join(', ') + '.';
+        var p2 = document.createElement('p');
+        p2.textContent = 'These are required, so the game cannot start here. An up-to-date '
+          + 'Chrome or Edge on a machine from the last decade is usually enough; on older '
+          + 'hardware it may not be.';
+        body.appendChild(p1); body.appendChild(p2);
+        modal.classList.remove('hidden');
+
+        var ok = document.getElementById('browser-warn-ok');
+        if (ok) {
+          ok.textContent = 'Continue anyway';
+          ok.addEventListener('click', function () { modal.classList.add('hidden'); }, { once: true });
+        }
+      } catch (e) { /* a preflight must never be the reason a page fails to load */ }
+    })();
+
+    (function checkBrowser() {
+      const ua = navigator.userAgent;
+      const force = new URLSearchParams(location.search).get('showcompat') === '1';
+
+      let brands = [];
+      try {
+        if (navigator.userAgentData && Array.isArray(navigator.userAgentData.brands)) {
+          brands = navigator.userAgentData.brands.map(b => b.brand);
+        }
+      } catch {}
+
+      const blockedBrand   = ['Vivaldi', 'Opera', 'Brave', 'Yandex', 'Samsung Internet'].some(b => brands.includes(b));
+      const blockedUaToken = /(OPR|Vivaldi|YaBrowser|SamsungBrowser|Brave)\//.test(ua);
+      const isBrave        = !!(navigator.brave && typeof navigator.brave.isBrave === 'function');
+      const isChromium     = /Chrome\/\d/.test(ua) || brands.includes('Chromium');
+
+      const supported = !force && isChromium && !blockedBrand && !blockedUaToken && !isBrave;
+      console.log('[compat] supported=' + supported,
+                  'ua=' + ua,
+                  'brands=' + JSON.stringify(brands),
+                  'isBrave=' + isBrave);
+      if (supported) return;
+
+      const KEY = 'cuo.browserWarnDismissed';
+      try { if (!force && sessionStorage.getItem(KEY) === '1') return; } catch {}
+      const modal = document.getElementById('browser-warn');
+      if (modal) modal.classList.remove('hidden');
+      const btn = document.getElementById('browser-warn-ok');
+      if (btn) btn.addEventListener('click', function() {
+        try { sessionStorage.setItem(KEY, '1'); } catch {}
+        modal.classList.add('hidden');
+      }, { once: true });
+    })();
+
+    // Auth callback — strip ?auth=ok/failed from URL; show error if failed.
+    (function handleAuthCallback() {
+      const p = new URLSearchParams(location.search);
+      const status = p.get('auth');
+      if (!status) return;
+      p.delete('auth');
+      history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : ''));
+      if (status === 'failed') {
+        const btn = document.getElementById('sso-continue');
+        if (btn) btn.insertAdjacentHTML('afterend',
+          '<p style="color:#c96969;font-size:11px;margin:4px 0 0">Sign-in failed — please try again.</p>');
+      }
+    })();
+  </script>
+
+  <div id="footer">
+    <span>Stuck on loading? Clear the cache from <a href="#" id="footer-storage-link">Manage storage</a>.</span>
+  </div>
+</body>
+</html>

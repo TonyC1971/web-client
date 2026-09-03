@@ -1,0 +1,45 @@
+name: Build & Publish Release
+
+on: [workflow_dispatch]
+
+jobs:
+  BuildAndPublish:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '8.0.x'
+    - name: Build FontStashSharp.PlatformAgnostic
+      run: dotnet build build\FontStashSharp.PlatformAgnostic.sln --configuration Release
+    - name: Build FontStashSharp.MonoGame
+      run: dotnet build build\FontStashSharp.MonoGame.sln --configuration Release
+    - name: Build FontStashSharp.Stride
+      run: dotnet build build\FontStashSharp.Stride.sln --configuration Release
+    - name: Build FontStashSharp.Kni
+      run: dotnet build build\FontStashSharp.Kni.sln --configuration Release
+    - name: Build FontStashSharp.XNA
+      run: dotnet build build\FontStashSharp.XNA.sln --configuration Release
+    - name: Test
+      run: dotnet test build\FontStashSharp.MonoGame.sln
+    - name: Install NuGet
+      uses: NuGet/setup-nuget@v2
+    - name: Publish FontStashSharp.PlatformAgnostic to NuGet
+      run: nuget.exe push src\FontStashSharp\bin\Release\FontStashSharp.PlatformAgnostic.*.nupkg ${{secrets.NUGET_APIKEY}} -Source https://api.nuget.org/v3/index.json
+      continue-on-error: true
+    - name: Publish FontStashSharp.MonoGame to NuGet
+      run: nuget.exe push src\XNA\bin\MonoGame\Release\FontStashSharp.MonoGame.*.nupkg ${{secrets.NUGET_APIKEY}} -Source https://api.nuget.org/v3/index.json
+      continue-on-error: true
+    - name: Publish FontStashSharp.Stride to NuGet
+      run: nuget.exe push src\XNA\bin\Stride\Release\FontStashSharp.Stride.*.nupkg ${{secrets.NUGET_APIKEY}} -Source https://api.nuget.org/v3/index.json
+      continue-on-error: true
+    - name: Publish FontStashSharp.Kni to NuGet
+      run: nuget.exe push src\XNA\bin\Kni\Release\FontStashSharp.Kni.*.nupkg ${{secrets.NUGET_APIKEY}} -Source https://api.nuget.org/v3/index.json
+      continue-on-error: true
+    - name: Publish FontStashSharp.XNA to NuGet
+      run: nuget.exe push src\XNA\bin\XNA\Release\FontStashSharp.XNA.*.nupkg ${{secrets.NUGET_APIKEY}} -Source https://api.nuget.org/v3/index.json
+      continue-on-error: true

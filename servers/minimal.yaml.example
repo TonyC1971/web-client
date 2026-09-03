@@ -1,0 +1,87 @@
+# The ONE shard a minimal self-hosted install serves.
+#
+# Copy this file to servers/<your-slug>.yaml (drop the .example suffix) and edit it. The client
+# connects to exactly this shard — there is no server picker in this build, so a second YAML here
+# does not add a second choice, it just makes it ambiguous which one is served. Keep one.
+#
+# ⚠️ `slug` must match THREE other places: SHARD_SLUG in .env, the folder under gamefiles/, and the
+# `slug` in client/minimal/config.json. This file tells the proxy WHERE the game server is;
+# config.json tells the browser which shard to ask for; the other two decide which directory of game
+# files gets mounted.
+#
+# If config.json disagrees with this file, the relay cannot resolve the shard the browser is asking
+# for: the client loads normally and then never connects. If .env or the folder name disagree, the
+# container mounts an empty directory and the client loads for ever. Neither says which name is
+# wrong, which is why it is worth checking all four before anything else.
+#
+# (An earlier version of this note said a mismatch shows up as corrupt artwork. It does not — there
+# is no second fileset on a single-shard install to load by mistake.)
+
+# Unique positive integer. Required — a missing or zero id is REJECTED, and the proxy then falls
+# back to synthesising a shard from UO_HOST/UO_PORT, which is why a boot log saying
+# "shard=default" after you wrote this file means the file was skipped. The reason is printed on
+# the line above it: look for "[ServerRegistry] SKIP".
+id: 1
+
+# Lowercase letters, digits and hyphens. Also the per-shard namespace for cached game files in the
+# browser, so changing it later makes every player re-download them.
+slug: myshard
+
+displayName: My Shard
+description: A self-hosted Ultima Online shard.
+
+# Where the UO server actually listens. This is the only place it is written: it never reaches the
+# browser, and the admin page deliberately does not show it.
+host: 127.0.0.1
+port: 2593
+
+# The client version reported to your server. Match what it expects, or logins are refused with an
+# unhelpful error.
+clientVersion: 7.0.45.1
+
+# none | old_bfish | blowfish_1_25_36 | blowfish | blowfish_2_0_3 | twofish_md5
+# Most modern free shards run with encryption off.
+encrypt: none
+
+# Server-side path to this shard's converted game files, INSIDE the container. Required.
+# ⚠️ It must sit under the mounted gamefiles root (/gamefiles-root in the bundled compose), and
+# the compose file already mounts ${GAMEFILES_ROOT}/${SHARD_SLUG} there — so this normally reads
+# /gamefiles-root/<your-slug> and you only change the slug part.
+# A path outside that root is REJECTED on purpose: it is what stops a shard config from being
+# turned into "serve any directory on the host".
+gamefilesPath: /gamefiles-root/myshard
+
+# Where the browser fetches your converted .mul files from, relative to the site root.
+# ℹ️ Brotli twins (server/scripts/precompress-gamefiles.mjs) are a BANDWIDTH win, not a
+# requirement — measured. The loader asks for each file by name and nginx's brotli_static falls
+# back to the raw file when no twin exists. An earlier version of this comment said every asset
+# 404s without them, which is false and expensive: quality 11 over a full fileset is hours.
+gamefilesUrlBase: gamefiles
+
+# Let players in without a Discord account. Leave true unless you want sign-in to be mandatory;
+# note that admin access relies on Discord, so an install with this false and no Discord app
+# configured has no way in at all.
+guestsAllowed: true
+
+# ── Optional: WebIdentity (packet 0xA4) ──────────────────────────────────────────────────────
+#
+# WITHOUT THIS, YOUR SHARD SEES EVERY WEB PLAYER AS ONE IP — the relay's. That is not cosmetic:
+# your server's per-IP defences (connection throttles, ping limits, audit logs) then treat all of
+# them as the same person, so one reconnect storm locks out everybody, and your logs cannot tell
+# two players apart.
+#
+# With it, the relay prefixes each upstream connection with a small frame carrying that player's
+# real address plus a shared secret, and your shard reads it. It is the same packet the official
+# ClassicUO web client uses, byte for byte.
+#
+# It needs BOTH halves configured, which is why it ships off:
+#   1. a handler on your shard. Ready-made ones for ModernUO, RunUO/ServUO and Sphere, with
+#      install notes, are in the `webidentity/` folder of this repository.
+#   2. this block, with the SAME secret, at least 16 characters.
+#
+# Turning it on here without the shard half means your server receives 149 bytes it does not
+# understand at the start of every connection. Do the shard side first.
+#
+# webIdentity:
+#   enabled: true
+#   secret: use-the-same-long-random-string-on-both-sides

@@ -1,0 +1,194 @@
+<!--
+  Shared MSBuild fragment imported by every development/webclient sub-project
+  that links FNA + FNA3D + MojoShader + Emscripten-SDL2 natives.
+
+  Origin: originally lived inline in native-shims.csproj (the FNA
+  hello-quad milestone). Split out when p4_cuo started hitting the same
+  "SDL2 was not found" / DllNotFound chain that P3b solved — duplicating
+  ~40 lines of NativeFileReference was the wrong move.
+
+  Consumers:  native-shims.csproj, classicuo-wasm.csproj, …
+-->
+<Project>
+  <PropertyGroup>
+    <WasmBuildNative>true</WasmBuildNative>
+
+    <!-- Emscripten's cache default (C:\Program Files\...) is
+         read-only on Windows; redirect to %LOCALAPPDATA% so the
+         first-time SDL2 port download can land. -->
+    <WasmCachePath Condition=" '$(WasmCachePath)' == '' ">$(LOCALAPPDATA)\em_cache</WasmCachePath>
+
+    <!-- .NET SDK default for Release wasm builds is `-Oz` (size),
+         which produces noticeably slower FNA3D / MojoShader hot
+         paths (every frame pays). Override to `-O2` — we have
+         plenty of bytes to spare (wasm binary is already ~20 MiB
+         and the .mul payload dwarfs it anyway) and the render loop
+         is CPU-bound in the interpreter. Override is safe on both
+         WasmCompile and WasmLink passes because the SDK already
+         uses -O2 for Link; changing Compile to match prevents the
+         mismatch that produced a nonhomogeneous emcc call earlier
+         in P4d bring-up.
+         Revert to '-Oz' if the binary grows past the Chrome
+         single-module limit (~4 GiB) or if a specific wasm-opt
+         pass regresses correctness. -->
+    <EmccCompileOptimizationFlag Condition="'$(EmccCompileOptimizationFlag)' == ''">-O2</EmccCompileOptimizationFlag>
+
+    <!-- Use MSBuild-resolved relative paths (no host-specific
+         junctions or absolute prefixes). emcc's Windows response-file
+         parser splits `-I C:\path with space\foo` regardless of quoting,
+         so callers whose repo path contains a space must keep their
+         emcc include paths quoted via the wrappers below. -->
+    <FnaLibDirNS>$(MSBuildThisFileDirectory)..\cuo\external\FNA\lib</FnaLibDirNS>
+    <Fna3dDirNS>$(FnaLibDirNS)/FNA3D</Fna3dDirNS>
+    <MojoShaderDirNS>$(Fna3dDirNS)/MojoShader</MojoShaderDirNS>
+
+    <!-- MSBuild ItemGroup splits on `;` so each flag becomes its own
+         item fed to emcc. Space-separated collapses into one quoted
+         arg and fails.
+
+         NativeFileReference .c files are compiled DURING the emcc
+         link step (emcc consumes them as input and compiles on the
+         fly), so -I/-D flags must live in EmccExtraLDFlags too —
+         not only in EmccExtraCFlags (which the SDK only uses for the
+         runtime-pack sources like pinvoke.c). -->
+    <_FnaCompileFlags>-DFNA3D_DRIVER_OPENGL;-DSUPPORT_PROFILE_HLSL=0;-DSUPPORT_PROFILE_METAL=0;-DSUPPORT_PROFILE_GLSPIRV=0;-DSUPPORT_PROFILE_SPIRV=0;-DMOJOSHADER_NO_VERSION_INCLUDE;-DMOJOSHADER_EFFECT_SUPPORT;-I$(Fna3dDirNS)/include;-I$(Fna3dDirNS)/src;-I$(MojoShaderDirNS);-I$(MojoShaderDirNS)/profiles;-Wno-unused-command-line-argument;-Wno-strict-prototypes</_FnaCompileFlags>
+
+    <!-- Diagnostic toggle (P4d.6 take 3 retainer).
+         Pass `-p:WasmDiagGL=true` (or invoke `publish-p4-cuo.bat diag`)
+         to compile the FNA3D OpenGL backend + MojoShader with
+         WASM_DIAG_GL defined. That re-arms a battery of fprintf(stderr)
+         dumps:
+           - GLSL transpile output per shader compile
+           - Vertex-attrib bind decisions (usage/index/loc/offset/stride)
+           - glLinkProgram link status + info log
+           - lookup_attributes table
+           - glGetError after every glDrawElements
+           - glClear color + bound FBO
+           - Bytecode hex of every shader fed to MOJOSHADER_glCompileShader
+         Off by default — these are noisy enough to bury the real trace.
+         Reach for them when the canvas goes black for unexplained
+         reasons (see TROUBLESHOOTING.md). -->
+    <_FnaCompileFlags Condition="'$(WasmDiagGL)' == 'true'">$(_FnaCompileFlags);-DWASM_DIAG_GL</_FnaCompileFlags>
+
+    <!-- WebGL2 link flags. FNA3D's OpenGL driver needs ES 3.0
+         (VAOs, instancing, MRT); without USE_WEBGL2=1 + FULL_ES3=1
+         Emscripten's SDL2/GL shim hands out a WebGL1 context and
+         getParameter returns undefined on ES3-only enums.
+
+         Memory model: the default
+         ALLOW_MEMORY_GROWTH=1 triggers `WebAssembly.Memory.grow()`
+         calls when the heap needs to expand, and each grow can
+         invalidate live WebGL buffer bindings (Emscripten's GL
+         shim pins buffer DataViews against the heap). Around
+         tick ~500 of the CUO main loop we hit an OOB trap that
+         matches this failure mode. Pre-allocate a 512 MiB heap
+         and disable growth so the GL bindings stay valid for the
+         whole session. .mul asset mount already consumes ~316
+         MiB in MEMFS, plus FNA3D's per-frame buffers and Mono's
+         GC roots, so 1 GiB is comfortable. (Probe mounted 629 MiB
+         of .mul into MEMFS on this board, so 512 MiB crashes at
+         Cliloc-load; 1 GiB leaves ~350 MiB headroom.) -->
+    <!-- 2 GiB pinned: 1 GiB was cutting it close once the game-phase
+         hit and GL render targets (3x 4096x4096 + 2x 2048x2048 = 224
+         MiB) allocate alongside Mono's working set and FNA3D buffers.
+         Intermittent OOB traps at tick 100-500 point to tight heap
+         pressure triggering GC compaction during async WS receive. -->
+    <!-- 2 GiB pinned. Tested 1/2/2.5/3 GiB:
+         1 GiB always OOB (tick ~100). 3 GiB never OOB but 50% of
+         Chrome instances fail to allocate. 2.5 GiB still has ~1/3
+         OOB at tick ~213 plus occasional load failures.
+         2 GiB: always loads, 4/6 runs stable (~500-800 ticks), 2/6
+         OOB at tick ~213 (deterministic event, not random pressure).
+         The tick-213 OOB is a separate investigation target. -->
+    <_MemoryFlags>-sINITIAL_MEMORY=2147483648;-sALLOW_MEMORY_GROWTH=0;-sMAXIMUM_MEMORY=2147483648</_MemoryFlags>
+    <!-- WebGL flags pinned to the *exact* set Mercury Workshop's
+         celeste-wasm + terraria-wasm ports use for FNA3D. Their stock
+         FNA3D 26.04 OpenGL driver renders to RenderTarget2D correctly
+         on this set; with USE_WEBGL2=1 / FULL_ES3=1 / MAX_WEBGL_VERSION=2
+         (what we had before P4d.6 take 4) Emscripten silently drops
+         glDrawElements writes to non-default FBOs, even though
+         glClear succeeds and glGetError stays at 0. Confirmed by
+         HotPink probe: Clear writes, draws don't overwrite.
+         See TROUBLESHOOTING.md "Custom FBO glDrawElements silently
+         dropped". -->
+    <_WebGLFlags>-sMIN_WEBGL_VERSION=2;-sOFFSCREENCANVAS_SUPPORT;$(_MemoryFlags)</_WebGLFlags>
+
+    <!-- IDBFS: emscripten's IndexedDB-backed filesystem. Without
+         `-lidbfs.js` the linker omits the IDBFS driver and
+         Module.FS.filesystems.IDBFS is undefined at runtime, so
+         main.js's FS.mount(IDBFS, {}, '/Data') throws
+         "IDBFS module not exposed by runtime". With the flag the
+         runtime exposes the driver and CUO's profile/macros/gump
+         coords persist across sessions. Pure JS library — no
+         wasm binary impact, and doesn't touch EXPORTED_RUNTIME_METHODS
+         (which is the bit that breaks .NET Mono's boot). -->
+    <_FsFlags>-lidbfs.js</_FsFlags>
+
+    <!-- DO NOT set -sEXPORTED_RUNTIME_METHODS here. The .NET Mono
+         WASM runtime populates its own list via internal link-time
+         settings and overriding it from user MSBuild strips methods
+         Mono needs at init (observed: mono_jiterp_placeholder_trace
+         crash, stringToUTF8Array missing, Module.FS undefined for the
+         preRun mount). The DOM input bridge bypasses ccall/cwrap by
+         calling wasm exports directly as Module._wasm_push_* and
+         marshalling UTF-8 through Module.stringToUTF8 + _malloc.
+         See source/webclient/classicuo-wasm/wwwroot/main.js installInputBridge(). -->
+
+    <EmccExtraCFlags>-sUSE_SDL=2;$(_FnaCompileFlags)</EmccExtraCFlags>
+    <EmccExtraLDFlags>-sUSE_SDL=2;$(_WebGLFlags);$(_FsFlags);$(_FnaCompileFlags)</EmccExtraLDFlags>
+  </PropertyGroup>
+
+  <!-- Path to the stub .c files lives beside this .targets file so
+       consumers don't care where it gets imported from. -->
+  <PropertyGroup>
+    <_WasmFnaStubsDir>$(MSBuildThisFileDirectory)</_WasmFnaStubsDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SDL2.c is a stub that lands "SDL2" in the PInvoke-table
+         generator's module list (see WasmApp.Common.targets:748
+         _WasmPInvokeModules). Real symbols come from -sUSE_SDL=2. -->
+    <NativeFileReference Include="$(_WasmFnaStubsDir)native-shims\SDL2.c" />
+    <!-- __Native.c: same trick for FNA's [DllImport("__Native")]
+         (emscripten_set_main_loop/cancel). -->
+    <NativeFileReference Include="$(_WasmFnaStubsDir)native-shims\__Native.c" />
+    <!-- SDL3 shim (P4d.1): FNA's SDL3.Legacy.cs has 1028
+         [DllImport("SDL3")] attributes whose default entry-point
+         names collide with SDL2's in the pinvoke-table generator
+         (SDL_SetWindowResizable signature widened uint32→int32
+         between versions). tools/patch-sdl3-legacy.py rewrites
+         those attributes to `EntryPoint = "sdl3_<OrigSymbol>"`,
+         producing a collision-free namespace. SDL3.c registers
+         the "SDL3" module + reserves a spot for hand-written
+         strong forwarders; sdl3_stubs.c carries 1028 weak empty
+         stubs so wasm-ld resolves every sdl3_* symbol even before
+         we wire real forwarders. -->
+    <NativeFileReference Include="$(_WasmFnaStubsDir)native-shims\SDL3.c" />
+    <NativeFileReference Include="$(_WasmFnaStubsDir)native-shims\sdl3_stubs.c" />
+
+    <!-- FNA3D: the `FNA3D.c` basename auto-registers "FNA3D" as a
+         PInvoke module for FNA's 85 DllImport("FNA3D") calls.
+         Skipped: Driver_D3D11, Driver_SDL (SDL3 GPU), Tracing. -->
+    <NativeFileReference Include="$(Fna3dDirNS)/src/FNA3D.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)/src/FNA3D_Driver_OpenGL.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)/src/FNA3D_Image.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)/src/FNA3D_PipelineCache.c" />
+
+    <!-- MojoShader. `mojoshader.c`'s dispatch table references emit_*
+         symbols from every profile even when the profile is disabled
+         at build time (they stub out to empty functions), so every
+         profile .c must link in. -->
+    <NativeFileReference Include="$(MojoShaderDirNS)/mojoshader.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/mojoshader_common.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/mojoshader_opengl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/mojoshader_effects.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_arb1.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_bytecode.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_common.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_d3d.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_glsl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_hlsl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_metal.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)/profiles/mojoshader_profile_spirv.c" />
+  </ItemGroup>
+</Project>

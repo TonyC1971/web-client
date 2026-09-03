@@ -1,0 +1,509 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using ClassicUO.Configuration;
+using ClassicUO.Game.Data;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.Map;
+using ClassicUO.Utility;
+using Microsoft.Xna.Framework;
+using System;
+using System.Runtime.CompilerServices;
+
+namespace ClassicUO.Game.GameObjects
+{
+    internal abstract class BaseGameObject : LinkedObject
+    {
+        protected BaseGameObject(World world) => World = world;
+
+        public Point RealScreenPosition;
+
+        public World World { get; }
+    }
+
+    internal abstract partial class GameObject : BaseGameObject
+    {
+        protected GameObject(World world) : base(world) { }
+
+        public bool IsDestroyed { get; protected set; }
+        public bool IsPositionChanged { get; protected set; }
+        public TextContainer TextContainer { get; private set; }
+        private AverageOverTime _averageOverTime;
+
+        public int Distance
+        {
+            get
+            {
+                if (
+                    World.Player == null /*|| IsDestroyed*/
+                )
+                {
+                    return ushort.MaxValue;
+                }
+
+                if (ReferenceEquals(this, World.Player))
+                {
+                    return 0;
+                }
+
+                int x = X,
+                    y = Y;
+
+                if (this is Mobile mobile && mobile.Steps.Count != 0)
+                {
+                    ref Mobile.Step step = ref mobile.Steps.Back();
+                    x = step.X;
+                    y = step.Y;
+                }
+
+                int fx = World.RangeSize.X;
+                int fy = World.RangeSize.Y;
+
+                return Math.Max(Math.Abs(x - fx), Math.Abs(y - fy));
+            }
+        }
+
+        public virtual void Update() { }
+
+        public abstract bool CheckMouseSelection();
+
+        // FIXME: remove it
+        public sbyte FoliageIndex = -1;
+        public ushort Graphic;
+        public ushort Hue;
+        public Vector3 Offset;
+        public short PriorityZ;
+        public GameObject TNext;
+        public GameObject TPrevious;
+        public ushort X,
+            Y;
+        public sbyte Z;
+
+        public void AddDamage(int damage)
+        {
+            _averageOverTime ??= new AverageOverTime(TimeSpan.FromSeconds(15));
+
+            _averageOverTime.AddValue(Time.Ticks, damage);
+        }
+        public double GetCurrentDPS()
+        {
+            if (_averageOverTime == null)
+            {
+                return 0;
+            }
+            return Math.Round(_averageOverTime.LastAveragePerSecond, 1);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Vector2 GetScreenPosition()
+        {
+            return new Vector2(
+                RealScreenPosition.X + Offset.X,
+                RealScreenPosition.Y + (Offset.Y - Offset.Z)
+            );
+        }
+
+        public void AddToTile()
+        {
+            AddToTile(X, Y);
+        }
+
+        public void AddToTile(int x, int y)
+        {
+            AddToTile(World.Map?.GetChunk(x, y), x % 8, y % 8);
+        }
+
+        public void AddToTile(Chunk chunk, int chunkX, int chunkY)
+        {
+            RemoveFromTile();
+
+            if (!IsDestroyed && chunk != null)
+            {
+                chunk.AddGameObject(this, chunkX, chunkY);
+            }
+        }
+
+        public void RemoveFromTile()
+        {
+            if (TPrevious != null)
+            {
+                TPrevious.TNext = TNext;
+            }
+
+            if (TNext != null)
+            {
+                TNext.TPrevious = TPrevious;
+            }
+
+            TNext = null;
+            TPrevious = null;
+        }
+
+        public virtual void UpdateGraphicBySeason() { }
+
+        public void UpdateScreenPosition()
+        {
+            IsPositionChanged = true;
+            OnPositionChanged();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UpdateRealScreenPosition(int offsetX, int offsetY)
+        {
+            RealScreenPosition.X = ((X - Y) * 22) - offsetX - 22;
+            RealScreenPosition.Y = ((X + Y) * 22 - (Z << 2)) - offsetY - 22;
+            IsPositionChanged = false;
+
+            UpdateTextCoordsV();
+        }
+
+        public void SetInWorldTile(ushort x, ushort y, sbyte z)
+        {
+            // v0.4.54: reverted v0.4.53's whole-chunk source invalidation.
+            // Invalidating the entire source chunk on every inter-chunk
+            // move forced full iteration during combat (mobs constantly
+            // cross chunk boundaries → +60% long-frames, operator
+            // runmatch9.log). The fogonazo it tried to fix is now handled
+            // surgically inside the replay loop in GameScene.cs: each
+            // cached object is skipped if its current (X>>3, Y>>3) no
+            // longer matches the chunk's coords. Same correctness, no
+            // cache-wide invalidation.
+            X = x;
+            Y = y;
+            Z = z;
+            UpdateScreenPosition();
+            AddToTile(x, y);
+        }
+
+        public void AddMessage(MessageType type, string message, TextType text_type)
+        {
+            AddMessage(
+                type,
+                message,
+                ProfileManager.CurrentProfile.ChatFont,
+                ProfileManager.CurrentProfile.SpeechHue,
+                true,
+                text_type
+            );
+        }
+
+        public virtual void UpdateTextCoordsV()
+        {
+            if (TextContainer == null)
+            {
+                return;
+            }
+
+            TextObject last = (TextObject)TextContainer.Items;
+
+            while (last?.Next != null)
+            {
+                last = (TextObject)last.Next;
+            }
+
+            if (last == null)
+            {
+                return;
+            }
+
+            int offY = 0;
+
+            Point p = RealScreenPosition;
+
+            var bounds = Client.Game.UO.Arts.GetRealArtBounds(Graphic);
+
+            p.Y -= bounds.Height >> 1;
+
+            p.X += (int)Offset.X + 22;
+            p.Y += (int)(Offset.Y - Offset.Z) + 44;
+
+            p = Client.Game.Scene.Camera.WorldToScreen(p, true);
+
+            for (; last != null; last = (TextObject)last.Previous)
+            {
+                if (last.RenderedText != null && !last.RenderedText.IsDestroyed)
+                {
+                    if (offY == 0 && last.Time < Time.Ticks)
+                    {
+                        continue;
+                    }
+
+                    last.OffsetY = offY;
+                    offY += last.RenderedText.Height;
+
+                    last.RealScreenPosition.X = p.X - (last.RenderedText.Width >> 1);
+                    last.RealScreenPosition.Y = p.Y - offY;
+                }
+            }
+
+            FixTextCoordinatesInScreen();
+        }
+
+        protected void FixTextCoordinatesInScreen()
+        {
+            if (this is Item it && SerialHelper.IsValid(it.Container))
+            {
+                return;
+            }
+
+            int topLeftGameWorldX = Client.Game.Scene.Camera.Bounds.X + 4;
+            int topLeftGameWorldY = Client.Game.Scene.Camera.Bounds.Y;
+
+            int bottomRightGameWorldX = Client.Game.Scene.Camera.Bounds.X + Client.Game.Scene.Camera.Bounds.Width;
+            int systemChatHeight = UIManager.SystemChat.TextBoxControl.IsVisible ? UIManager.SystemChat.TextBoxControl.Height : 0;
+            int bottomRightGameWorldY = Client.Game.Scene.Camera.Bounds.Y + Client.Game.Scene.Camera.Bounds.Height - systemChatHeight;
+            
+            for (
+                TextObject item = (TextObject)TextContainer.Items;
+                item != null;
+                item = (TextObject)item.Next
+            )
+            {
+                if (
+                    item.RenderedText == null
+                    || item.RenderedText.IsDestroyed
+                    || !item.RenderedText.HasContent
+                    || item.Time < Time.Ticks
+                )
+                {
+                    continue;
+                }
+
+                int startX = item.RealScreenPosition.X;
+                int endX = startX + item.RenderedText.Width;
+
+                if (startX < topLeftGameWorldX)
+                {
+                    item.RealScreenPosition.X += topLeftGameWorldX - startX;
+                }
+
+                if (endX > bottomRightGameWorldX)
+                {
+                    item.RealScreenPosition.X -= endX - bottomRightGameWorldX;
+                }
+
+                int startY = item.RealScreenPosition.Y;
+                int endY = startY + item.RenderedText.Height;
+
+                if (startY < topLeftGameWorldY)
+                {
+                    item.RealScreenPosition.Y += topLeftGameWorldY - startY;
+                }
+
+                if (endY > bottomRightGameWorldY)
+                {
+                    item.RealScreenPosition.Y -= endY - bottomRightGameWorldY;
+                }
+            }
+        }
+
+        public void AddMessage(
+            MessageType type,
+            string text,
+            byte font,
+            ushort hue,
+            bool isunicode,
+            TextType text_type
+        )
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            TextObject msg = World.MessageManager.CreateMessage(
+                text,
+                hue,
+                font,
+                isunicode,
+                type,
+                text_type
+            );
+
+            AddMessage(msg);
+        }
+
+        public void AddMessage(TextObject msg)
+        {
+            if (TextContainer == null)
+            {
+                TextContainer = new TextContainer();
+            }
+
+            msg.Owner = this;
+            TextContainer.Add(msg);
+
+            if (this is Item it && SerialHelper.IsValid(it.Container))
+            {
+                UpdateTextCoordsV();
+            }
+            else
+            {
+                IsPositionChanged = true;
+                World.WorldTextManager.AddMessage(msg);
+            }
+        }
+
+        protected virtual void OnPositionChanged() { }
+
+        protected virtual void OnDirectionChanged() { }
+
+        public virtual void Destroy()
+        {
+            if (IsDestroyed)
+            {
+                return;
+            }
+
+            Next = null;
+            Previous = null;
+
+            Clear();
+            RemoveFromTile();
+            TextContainer?.Clear();
+            _averageOverTime = null;
+            IsDestroyed = true;
+            PriorityZ = 0;
+            IsPositionChanged = false;
+            Hue = 0;
+            Offset = Vector3.Zero;
+            RealScreenPosition = Point.Zero;
+            IsFlipped = false;
+            Graphic = 0;
+            ObjectHandlesStatus = ObjectHandlesStatus.NONE;
+            FrameInfo = Rectangle.Empty;
+        }
+
+        // v0.4.66 CanBeDrawn cache. Per-graphic memoization: the original
+        // body did a `string.IsNullOrEmpty + StartsWith("nodraw", OrdinalIgnoreCase)`
+        // on every call. With ~1300 ObjectInfo packets per runmatch teleport
+        // every CheckGraphicChange path hit this string work; profiling traced
+        // ~330ms/teleport to UpdateGameObject inner work, of which the string
+        // comparison was the only non-trivial slice. Classifications:
+        //   0 = uncached (first-touch path computes + stores)
+        //   1 = always-true (graphic-deterministic; safe across race-change)
+        //   2 = always-false (hardcoded reject, range, or nodraw)
+        //   3 = race-dependent (IsNoDiagonal && IsAnimated; recompute live —
+        //       only ~10 graphics fall here, so live cost is negligible)
+        private static byte[] _canBeDrawnCache;
+
+        public static bool CanBeDrawn(World world, ushort g)
+        {
+            if (Client.Game == null)
+                return true;
+
+            byte[] cache = _canBeDrawnCache;
+            if (cache != null && g < cache.Length)
+            {
+                byte cls = cache[g];
+                if (cls == 1) return true;
+                if (cls == 2) return false;
+                if (cls == 3)
+                {
+                    ref var rd = ref Client.Game.UO.FileManager.TileData.StaticData[g];
+                    return rd.IsAnimated
+                           && world.Player != null
+                           && world.Player.Race == RaceType.GARGOYLE;
+                }
+            }
+
+            return CanBeDrawnSlow(world, g);
+        }
+
+        private static bool CanBeDrawnSlow(World world, ushort g)
+        {
+            byte cls;
+            bool result;
+
+            switch (g)
+            {
+                case 0x0001:
+                case 0x21BC:
+                case 0xA1FE:
+                case 0xA1FF:
+                case 0xA200:
+                case 0xA201:
+                    //case 0x5690:
+                    cls = 2;
+                    result = false;
+                    goto store;
+
+                case 0x9E4C:
+                case 0x9E64:
+                case 0x9E65:
+                case 0x9E7D:
+                    ref var data = ref Client.Game.UO.FileManager.TileData.StaticData[g];
+                    result = !data.IsBackground && !data.IsSurface;
+                    cls = (byte)(result ? 1 : 2);
+                    goto store;
+            }
+
+            if (g != 0x63D3)
+            {
+                if (g >= 0x2198 && g <= 0x21A4)
+                {
+                    cls = 2;
+                    result = false;
+                    goto store;
+                }
+
+                // Easel fix.
+                // In older clients the tiledata flag for this
+                // item contains NoDiagonal for some reason.
+                // So the next check will make the item invisible.
+                if (g == 0x0F65 && Client.Game.UO.Version < ClientVersion.CV_60144)
+                {
+                    cls = 1;
+                    result = true;
+                    goto store;
+                }
+
+                if (g < Client.Game.UO.FileManager.TileData.StaticData.Length)
+                {
+                    ref var data = ref Client.Game.UO.FileManager.TileData.StaticData[g];
+
+                    // Hacky way to do not render "nodraw"
+                    if (!string.IsNullOrEmpty(data.Name) && data.Name.StartsWith("nodraw", StringComparison.OrdinalIgnoreCase))
+                    {
+                        cls = 2;
+                        result = false;
+                        goto store;
+                    }
+
+                    if (!data.IsNoDiagonal)
+                    {
+                        cls = 1;
+                        result = true;
+                        goto store;
+                    }
+
+                    // IsNoDiagonal: race-dependent. Don't cache definitively.
+                    cls = 3;
+                    result = data.IsAnimated
+                             && world.Player != null
+                             && world.Player.Race == RaceType.GARGOYLE;
+                    goto store;
+                }
+            }
+
+            cls = 2;
+            result = false;
+
+        store:
+            byte[] cache = _canBeDrawnCache;
+            if (cache == null)
+            {
+                int len = Client.Game.UO.FileManager.TileData.StaticData.Length;
+                if (len > 0)
+                {
+                    cache = new byte[len];
+                    _canBeDrawnCache = cache;
+                }
+            }
+            if (cache != null && g < cache.Length)
+            {
+                cache[g] = cls;
+            }
+            return result;
+        }
+    }
+}

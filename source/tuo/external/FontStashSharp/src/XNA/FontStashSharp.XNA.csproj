@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <PackageId>FontStashSharp.XNA</PackageId>
+    <AssemblyName>FontStashSharp.XNA</AssemblyName>
+    <Description>FontStashSharp for XNA Framework 4.0</Description>
+    <DefineConstants>$(DefineConstants);XNA</DefineConstants>
+    <OutputPath>bin\XNA\$(Configuration)</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FontStashSharp.Base" Version="$(FontStashSharpBaseVersion)" />
+    <PackageReference Include="FontStashSharp.Rasterizers.StbTrueTypeSharp" Version="$(FontStashSharpBaseVersion)" />
+    <PackageReference Include="Cyotek.Drawing.BitmapFont" Version="$(CyotekDrawingBitmapFontVersion)" />
+    <PackageReference Include="StbImageSharp" Version="$(StbImageSharpVersion)" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <XNAFrameworkDir Condition="'$(XNAFrameworkDir)' == ''">References</XNAFrameworkDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.Xna.Framework">
+      <HintPath>$(XNAFrameworkDir)\Microsoft.Xna.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Game">
+      <HintPath>$(XNAFrameworkDir)\Microsoft.Xna.Framework.Game.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Xna.Framework.Graphics">
+      <HintPath>$(XNAFrameworkDir)\Microsoft.Xna.Framework.Graphics.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeXNAAssembliesForNuGet</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <Target Name="IncludeXNAAssembliesForNuGet">
+    <ItemGroup>
+      <BuildOutputInPackage Include="$(XNAFrameworkDir)\*" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="..\FontStashSharp\**\*.cs" LinkBase="FontStashSharp" />
+    <Compile Remove="..\FontStashSharp\obj\**\*.cs" LinkBase="FontStashSharp" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,44 @@
+/* Skin for the standalone pages this build serves. Today that is privacy.html alone: faq.html
+   was removed on 2026-08-27 (operator: the bundled FAQ was too thin to send anyone to; the tab
+   points at uonexus.com/faq instead). Kept as a separate stylesheet so the next such page has one.
+   Same tokens as admin.html, kept in ONE file so the three cannot drift apart. It is a real
+   stylesheet rather than an inline copy because these two pages are plain documents with no CSP
+   of their own -- admin.html inlines its tokens for a reason that does not apply here. */
+@font-face { font-family:'Fondamento'; font-style:normal; font-weight:400; font-display:swap;
+             src:url('Fondamento-Regular.ttf') format('truetype'); }
+:root {
+  --bg:#0d0d0f; --panel:#15151a;
+  --edge:rgba(255,213,126,0.20); --edge-soft:rgba(255,255,255,0.07);
+  --ink:#e9e2d4; --dim:rgba(233,226,212,0.56);
+  --gold:#ffd57e; --gold-soft:#ffe8c4;
+  --font-display:'Fondamento',Georgia,serif;
+  --font-body:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:ui-monospace,Consolas,monospace;
+  --radius:8px; --radius-card:12px;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--font-body);
+       font-size:14.5px; line-height:1.62; padding:30px 20px 70px;
+       overflow-wrap:anywhere; -webkit-text-size-adjust:100%; }
+.wrap { max-width:780px; margin:0 auto; }
+h1 { font-family:var(--font-display); font-size:26px; margin:0 0 6px; color:var(--gold);
+     font-weight:400; letter-spacing:.02em; text-shadow:0 1px 3px rgba(0,0,0,.85); }
+.sub { color:var(--dim); margin:0 0 26px; font-size:13px; }
+section { background:var(--panel); border:1px solid var(--edge); border-radius:var(--radius-card);
+          padding:18px 22px; margin-bottom:15px; }
+h2 { font-family:var(--font-display); font-size:19px; margin:0 0 10px; font-weight:400;
+     color:var(--gold); letter-spacing:.01em; text-shadow:0 1px 2px rgba(0,0,0,.7); }
+h3 { font-family:var(--font-display); font-size:15.5px; font-weight:400; color:var(--gold-soft);
+     margin:18px 0 5px; }
+p { margin:0 0 11px; }
+p:last-child { margin-bottom:0; }
+ul { margin:0 0 11px; padding-left:20px; }
+li { margin:3px 0; }
+a { color:var(--gold); }
+code { font-family:var(--mono); background:rgba(0,0,0,.4); border:1px solid var(--edge-soft);
+       border-radius:4px; padding:1px 5px; font-size:12px; color:var(--gold-soft); }
+.note { margin:14px 0 0; padding:9px 13px; border-left:2px solid rgba(255,213,126,.4);
+        background:rgba(255,213,126,.055); border-radius:0 var(--radius) var(--radius) 0;
+        color:var(--dim); font-size:13px; line-height:1.6; }
+.note strong { color:var(--ink); font-weight:600; }
+.back { display:inline-block; margin-top:22px; color:var(--dim); font-size:13px; }

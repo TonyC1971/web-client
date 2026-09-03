@@ -1,0 +1,819 @@
+﻿// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using System.Collections.Generic;
+using ClassicUO.Configuration;
+using ClassicUO.Game.Data;
+using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.Scenes;
+using ClassicUO.Game.UI;
+using ClassicUO.Input;
+using ClassicUO.Game.UI.Controls;
+using ClassicUO.Renderer;
+using ClassicUO.Utility.Logging;
+using Microsoft.Xna.Framework;
+using SDL3;
+
+namespace ClassicUO.Game
+{
+    public sealed class GameCursor
+    {
+        private static readonly ushort[,] _cursorData = new ushort[2, 16]
+        {
+            {
+                0x206A,
+                0x206B,
+                0x206C,
+                0x206D,
+                0x206E,
+                0x206F,
+                0x2070,
+                0x2071,
+                0x2072,
+                0x2073,
+                0x2074,
+                0x2075,
+                0x2076,
+                0x2077,
+                0x2078,
+                0x2079
+            },
+            {
+                0x2053,
+                0x2054,
+                0x2055,
+                0x2056,
+                0x2057,
+                0x2058,
+                0x2059,
+                0x205A,
+                0x205B,
+                0x205C,
+                0x205D,
+                0x205E,
+                0x205F,
+                0x2060,
+                0x2061,
+                0x2062
+            }
+        };
+
+        private readonly Aura _aura;
+        private readonly List<CustomBuildObject> _componentsList = new ();
+        private readonly int[,] _cursorOffset = new int[2, 16];
+        private readonly IntPtr[,] _cursors_ptr = new IntPtr[2, 16];
+        private ushort _graphic = 0x2073;
+        private bool _needGraphicUpdate = true;
+        private readonly List<Multi> _temp = new List<Multi>();
+        private readonly Tooltip _tooltip;
+        private readonly World _world;
+
+        /// <summary>
+        ///     The game cursor's visual style override.
+        ///     When set to a value other than null, the cursor's visual style will be overridden.
+        /// </summary>
+        private GameCursorVisualType? _cursorVisual;
+
+        public GameCursor(World world)
+        {
+            ClassicUO.Utility.Logging.Log.Trace("[cursor-debug] C1: GameCursor enter");
+            _world = world;
+            _tooltip = new Tooltip(world);
+            ClassicUO.Utility.Logging.Log.Trace("[cursor-debug] C2: Tooltip done");
+            _aura = new Aura(30);
+            ClassicUO.Utility.Logging.Log.Trace("[cursor-debug] C3: Aura done");
+
+            for (int i = 0; i < 2; i++)
+            {
+                for (int j = 0; j < 16; j++)
+                {
+                    ushort id = _cursorData[i, j];
+                    if (i == 0 && j == 0) ClassicUO.Utility.Logging.Log.Trace($"[cursor-debug] C4: pre-CreateCursorSurfacePtr(id={id})");
+
+                    nint surface = Client.Game.UO.Arts.CreateCursorSurfacePtr(
+                        id,
+                        0,
+                        out int hotX,
+                        out int hotY
+                    );
+                    if (i == 0 && j == 0) ClassicUO.Utility.Logging.Log.Trace($"[cursor-debug] C5: post-CreateCursorSurfacePtr surface=0x{surface:X} hotX={hotX} hotY={hotY}");
+
+                    // Assign the hotspot UNCONDITIONALLY (ported from CUO
+                    // GameCursor). hotX/hotY are computed by CreateCursorSurfacePtr
+                    // from the cursor art's green marker pixel and are valid EVEN
+                    // when the SDL surface comes back IntPtr.Zero. On wasm the SDL
+                    // surface/cursor calls are stubbed to Zero, so the old
+                    // `surface != Zero` gate around this assignment left
+                    // _cursorOffset all-zero — the GameCursor sprite then drew
+                    // with its top-left pinned to Mouse.Position, offsetting every
+                    // click/target by the hotspot amount (operator: "el cursor
+                    // apunta a otro lugar" vs the selection highlight). Only the
+                    // native SDL cursor creation actually needs the surface.
+                    if (hotX != 0 || hotY != 0)
+                    {
+                        _cursorOffset[0, j] = hotX;
+                        _cursorOffset[1, j] = hotY;
+                    }
+
+                    if (surface != IntPtr.Zero)
+                    {
+#if !BROWSER_WASM
+                        // v0.7.9: SDL.SDL_CreateColorCursor is a P/Invoke that
+                        // marshals SDL_Surface* + integer args. On Mercury MT
+                        // it throws ArgumentNullException at the byte* layer
+                        // before the native stub returns IntPtr.Zero. The web
+                        // build has no native cursor surface anyway — the
+                        // browser composites the canvas-rendered cursor via
+                        // FNA's draw path (Mouse.Position handler in main.js
+                        // bridges to GameCursor.Draw).
+                        _cursors_ptr[i, j] = SDL.SDL_CreateColorCursor(surface, hotX, hotY);
+#endif
+                    }
+                }
+            }
+            ClassicUO.Utility.Logging.Log.Trace("[cursor-debug] C6: GameCursor exit");
+        }
+
+        public ushort Graphic
+        {
+            get => _graphic;
+            set
+            {
+                if (_graphic != value)
+                {
+                    _graphic = value;
+                    _needGraphicUpdate = true;
+                }
+            }
+        }
+
+        public bool IsLoading { get; set; }
+        public bool IsDraggingCursorForced { get; set; }
+        public bool AllowDrawSDLCursor { get; set; } = true;
+        public bool IsVisible { get; set; } = true;
+
+        public ItemHold ItemHold { get; } = new ItemHold();
+
+        private ushort GetDraggingItemGraphic()
+        {
+            if (ItemHold.Enabled)
+            {
+                if (ItemHold.IsGumpTexture)
+                {
+                    return (ushort)(ItemHold.DisplayedGraphic - Constants.ITEM_GUMP_TEXTURE_OFFSET);
+                }
+
+                return ItemHold.DisplayedGraphic;
+            }
+
+            return 0xFFFF;
+        }
+
+        private Point GetDraggingItemOffset()
+        {
+            ushort graphic = GetDraggingItemGraphic();
+
+            if (graphic == 0xFFFF)
+            {
+                return Point.Zero;
+            }
+
+            ref readonly SpriteInfo artInfo = ref (ItemHold.IsGumpTexture ? ref Client.Game.UO.Gumps.GetGump(graphic) : ref Client.Game.UO.Arts.GetArt(graphic));
+
+            float scale = 1;
+
+            if (
+                ProfileManager.CurrentProfile != null
+                && ProfileManager.CurrentProfile.ScaleItemsInsideContainers
+            )
+            {
+                scale = UIManager.ContainerScale;
+            }
+
+            return new Point(
+                (int)((artInfo.UV.Width >> 1) * scale) - ItemHold.MouseOffset.X,
+                (int)((artInfo.UV.Height >> 1) * scale) - ItemHold.MouseOffset.Y
+            );
+        }
+
+        public void Update()
+        {
+            Graphic = AssignGraphicByState();
+
+            if (_needGraphicUpdate)
+            {
+                _needGraphicUpdate = false;
+
+                if (AllowDrawSDLCursor && Settings.GlobalSettings.RunMouseInASeparateThread)
+                {
+                    ushort id = Graphic;
+
+                    if (id < 0x206A)
+                    {
+                        id -= 0x2053;
+                    }
+                    else
+                    {
+                        id -= 0x206A;
+                    }
+
+                    int war = _world.InGame && _world.Player.InWarMode ? 1 : 0;
+
+                    ref IntPtr ptrCursor = ref _cursors_ptr[war, id];
+
+                    if (ptrCursor != IntPtr.Zero)
+                    {
+                        SDL.SDL_SetCursor(ptrCursor);
+                    }
+                }
+            }
+
+            if (!ItemHold.Enabled)
+            {
+                return;
+            }
+            ushort draggingGraphic = GetDraggingItemGraphic();
+
+            if (draggingGraphic == 0xFFFF || !ItemHold.IsFixedPosition || UIManager.IsDragging)
+            {
+                return;
+            }
+            ref readonly SpriteInfo artInfo = ref (ItemHold.IsGumpTexture ? ref Client.Game.UO.Gumps.GetGump(draggingGraphic) : ref Client.Game.UO.Arts.GetArt(draggingGraphic));
+
+            Point offset = GetDraggingItemOffset();
+
+            int x = ItemHold.FixedX - offset.X;
+            int y = ItemHold.FixedY - offset.Y;
+
+            if (
+                Mouse.Position.X >= x
+                && Mouse.Position.X < x + artInfo.UV.Width
+                && Mouse.Position.Y >= y
+                && Mouse.Position.Y < y + artInfo.UV.Height
+            )
+            {
+                if (!ItemHold.IgnoreFixedPosition)
+                {
+                    ItemHold.IsFixedPosition = false;
+                    ItemHold.FixedX = 0;
+                    ItemHold.FixedY = 0;
+                }
+            }
+            else if (ItemHold.IgnoreFixedPosition)
+            {
+                ItemHold.IgnoreFixedPosition = false;
+            }
+        }
+
+        public void Draw(UltimaBatcher2D sb)
+        {
+            // Check if mouse should be hidden via Hide HUD system
+            if (!IsVisible)
+            {
+                return;
+            }
+
+            if (_world.InGame && _world.TargetManager.IsTargeting && ProfileManager.CurrentProfile != null)
+            {
+                if (_world.TargetManager.TargetingState == CursorTarget.MultiPlacement)
+                {
+                    if (
+                        _world.CustomHouseManager != null
+                        && _world.CustomHouseManager.SelectedGraphic != 0
+                    )
+                    {
+                        ushort hue = 0;
+
+                        _componentsList.Clear();
+                        if (
+                            !_world.CustomHouseManager.CanBuildHere(
+                                _componentsList,
+                                out CUSTOM_HOUSE_BUILD_TYPE type
+                            )
+                        )
+                        {
+                            hue = 0x0021;
+                        }
+
+                        //if (_temp.Count != list.Count)
+                        {
+                            _temp.ForEach(s => s.Destroy());
+                            _temp.Clear();
+
+                            for (int i = 0; i < _componentsList.Count; i++)
+                            {
+                                var m = Multi.Create(_world, _componentsList[i].Graphic);
+                                m.AlphaHue = 0xFF;
+                                m.Hue = hue;
+                                m.State = CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_PREVIEW;
+                                _temp.Add(m);
+                            }
+                        }
+
+                        if (_componentsList.Count != 0)
+                        {
+                            if (SelectedObject.Object is GameObject selectedObj)
+                            {
+                                int z = 0;
+
+                                if (selectedObj.Z < _world.CustomHouseManager.MinHouseZ)
+                                {
+                                    if (
+                                        selectedObj.X >= _world.CustomHouseManager.StartPos.X - 1
+                                        && selectedObj.X <= _world.CustomHouseManager.EndPos.X - 1
+                                        && selectedObj.Y >= _world.CustomHouseManager.StartPos.Y - 1
+                                        && selectedObj.Y <= _world.CustomHouseManager.EndPos.Y - 1
+                                    )
+                                    {
+                                        if (type != CUSTOM_HOUSE_BUILD_TYPE.CHBT_STAIR)
+                                        {
+                                            z += 7;
+                                        }
+                                    }
+                                }
+
+                                for (int i = 0; i < _componentsList.Count; i++)
+                                {
+                                    CustomBuildObject item = _componentsList[i];
+
+                                    _temp[i].SetInWorldTile(
+                                        (ushort)(selectedObj.X + item.X),
+                                        (ushort)(selectedObj.Y + item.Y),
+                                        (sbyte)(_world.Player.Z + item.Z)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    else if (_temp.Count != 0)
+                    {
+                        _temp.ForEach(s => s.Destroy());
+                        _temp.Clear();
+                    }
+                }
+                else if (_temp.Count != 0)
+                {
+                    _temp.ForEach(s => s.Destroy());
+                    _temp.Clear();
+                }
+
+                if (ProfileManager.CurrentProfile.AuraOnMouse)
+                {
+                    ushort id = Graphic;
+
+                    if (id < 0x206A)
+                    {
+                        id -= 0x2053;
+                    }
+                    else
+                    {
+                        id -= 0x206A;
+                    }
+
+                    ushort hue = 0;
+
+                    switch (_world.TargetManager.TargetingType)
+                    {
+                        case TargetType.Neutral:
+                            hue = 0x03b2;
+
+                            break;
+
+                        case TargetType.Harmful:
+                            hue = 0x0023;
+
+                            break;
+
+                        case TargetType.Beneficial:
+                            hue = 0x005A;
+
+                            break;
+                    }
+
+                    float scale = Client.Game.RenderScale;
+
+                    _aura.Draw(sb, (int)(Mouse.Position.X * scale), (int)(Mouse.Position.Y * scale), hue, 0f);
+                }
+
+                if (ProfileManager.CurrentProfile.ShowTargetRangeIndicator)
+                {
+                    if (UIManager.IsMouseOverWorld)
+                    {
+                        if (SelectedObject.Object is GameObject obj)
+                        {
+                            string dist = obj.Distance.ToString();
+
+                            var hue = new Vector3(0, 1, 1f);
+                            sb.DrawString(
+                                Fonts.Bold,
+                                dist,
+                                Mouse.Position.X - 26,
+                                Mouse.Position.Y - 21,
+                                hue
+                            );
+
+                            hue.Y = 0;
+                            sb.DrawString(
+                                Fonts.Bold,
+                                dist,
+                                Mouse.Position.X - 25,
+                                Mouse.Position.Y - 20,
+                                hue
+                            );
+                        }
+                    }
+                }
+            }
+            else if (_temp.Count != 0)
+            {
+                _temp.ForEach(s => s.Destroy());
+                _temp.Clear();
+            }
+
+            if (ItemHold.Enabled && !ItemHold.Dropped)
+            {
+                float scale = Client.Game.RenderScale;
+
+                if (
+                    ProfileManager.CurrentProfile != null
+                    && ProfileManager.CurrentProfile.ScaleItemsInsideContainers
+                )
+                {
+                    scale = UIManager.ContainerScale;
+                }
+
+                ushort draggingGraphic = GetDraggingItemGraphic();
+
+                ref readonly SpriteInfo artInfo = ref (ItemHold.IsGumpTexture ? ref Client.Game.UO.Gumps.GetGump(draggingGraphic) : ref Client.Game.UO.Arts.GetArt(draggingGraphic));
+
+                if (artInfo.Texture != null)
+                {
+                    Point offset = GetDraggingItemOffset();
+
+                    int x =
+                        (ItemHold.IsFixedPosition ? ItemHold.FixedX : Mouse.Position.X) - offset.X;
+                    int y =
+                        (ItemHold.IsFixedPosition ? ItemHold.FixedY : Mouse.Position.Y) - offset.Y;
+
+                    Vector3 hue = ShaderHueTranslator.GetHueVector(
+                        ItemHold.Hue,
+                        ItemHold.IsPartialHue,
+                        ItemHold.HasAlpha ? .5f : 1f
+                    );
+
+                    var rect = new Rectangle(
+                        x,
+                        y,
+                        (int)(artInfo.UV.Width * scale),
+                        (int)(artInfo.UV.Height * scale)
+                    );
+
+                    sb.Draw(artInfo.Texture, rect, artInfo.UV, hue);
+
+                    if (
+                        ItemHold.Amount > 1
+                        && ItemHold.DisplayedGraphic == ItemHold.Graphic
+                        && ItemHold.IsStackable
+                    )
+                    {
+                        rect.X += 5;
+                        rect.Y += 5;
+
+                        sb.Draw(artInfo.Texture, rect, artInfo.UV, hue);
+                    }
+                }
+            }
+
+            DrawToolTip(sb, Mouse.Position);
+
+            // Wasm: always draw the sprite cursor. The default
+            // RunMouseInASeparateThread=true on desktop skips this
+            // branch in favour of a pre-rendered SDL_SetCursor
+            // bitmap, but on Emscripten SDL_SetCursor lands on
+            // the browser's system cursor (only a handful of
+            // predefined arrows) so the UO cursor sprite never
+            // appears. Forcing the sprite draw path here gives
+            // us the authentic gold arrow / hourglass / hand
+            // cursors rendered inside the GL canvas. (Ported from
+            // CUO GameCursor.Draw — TUO adopted CUO's wasm shader
+            // but missed this C# draw-path guard.)
+#if BROWSER_WASM
+            if (true)
+#else
+            if (!Settings.GlobalSettings.RunMouseInASeparateThread)
+#endif
+            {
+                Graphic = AssignGraphicByState();
+
+                ushort graphic = Graphic;
+
+                if (graphic < 0x206A)
+                {
+                    graphic -= 0x2053;
+                }
+                else
+                {
+                    graphic -= 0x206A;
+                }
+
+                int offX = _cursorOffset[0, graphic];
+                int offY = _cursorOffset[1, graphic];
+
+                Vector3 hueVec = ShaderHueTranslator.GetHueVector(0);
+
+                ref readonly SpriteInfo artInfo = ref Client.Game.UO.Arts.GetArt(Graphic);
+
+                Rectangle rect = artInfo.UV;
+
+                const int BORDER_SIZE = 1;
+                rect.X += BORDER_SIZE;
+                rect.Y += BORDER_SIZE;
+                rect.Width -= BORDER_SIZE * 2;
+                rect.Height -= BORDER_SIZE * 2;
+
+                sb.Draw(
+                    artInfo.Texture,
+                    new Vector2(Mouse.Position.X - offX, Mouse.Position.Y - offY),
+                    rect,
+                    hueVec
+                );
+            }
+        }
+
+        /// <summary>
+        /// Overrides the game cursor visual style.
+        /// Set to null to remove the override and revert to the standard behavior.
+        /// <para>
+        /// <b>This is a global override; Discretion is required.</b>
+        /// </para>
+        /// </summary>
+        /// <param name="visual">
+        /// The visual style to use.
+        /// <para>
+        /// Note that additional styles are available but not listed here. See <see cref="_cursorData"/> for a complete list
+        /// </para>
+        /// </param>
+        public void ForceSetCursorVisualStyle(GameCursorVisualType? visual)
+        {
+            if (visual is null)
+            {
+                _cursorVisual = null;
+                return;
+            }
+
+            int index = (int)visual.Value;
+            if (index < 0 || (uint)index >= (uint)_cursorData.GetLength(1))
+            {
+                Log.Warn($"Method was called with an out-of-bounds cursor visual '{visual}'. Ignoring");
+                return; // This is a pretty 'low-value' method, so it's honestly better to ignore than crash here.
+            }
+
+            _cursorVisual = visual;
+        }
+
+        private void DrawToolTip(UltimaBatcher2D batcher, Point position)
+        {
+            if (Client.Game.Scene is GameScene gs)
+            {
+                if (
+                    (!_world.ClientFeatures.TooltipsEnabled && ProfileManager.CurrentProfile != null && !ProfileManager.CurrentProfile.ForceTooltipsOnOldClients)
+                    || (
+                        SelectedObject.Object is Item selectedItem
+                        && selectedItem.IsLocked
+                        && selectedItem.ItemData.Weight == 255
+                        && !selectedItem.ItemData.IsContainer
+                        &&
+                        // We need to check if OPL contains data.
+                        // If not we can ignore tooltip.
+                        !_world.OPL.Contains(selectedItem)
+                    )
+                    || (ItemHold.Enabled && !ItemHold.IsFixedPosition)
+                )
+                {
+                    if (
+                        !_tooltip.IsEmpty
+                        && (UIManager.MouseOverControl == null || UIManager.IsMouseOverWorld)
+                    )
+                    {
+                        _tooltip.Clear();
+                    }
+                }
+                else
+                {
+                    if (
+                        UIManager.IsMouseOverWorld
+                        && SelectedObject.Object is Entity item
+                        && _world.OPL.Contains(item)
+                    )
+                    {
+                        if (_tooltip.IsEmpty || item != _tooltip.Serial)
+                        {
+                            _tooltip.SetGameObject(item);
+                        }
+
+                        _tooltip.Draw(batcher, position.X, position.Y + 24);
+
+                        return;
+                    }
+
+                    if (
+                        UIManager.MouseOverControl != null
+                        && UIManager.MouseOverControl.Tooltip is uint serial
+                    )
+                    {
+                        if (SerialHelper.IsValid(serial) && _world.OPL.Contains(serial))
+                        {
+                            if (_tooltip.IsEmpty || serial != _tooltip.Serial)
+                            {
+                                _tooltip.SetGameObject(serial);
+                            }
+
+                            _tooltip.Draw(batcher, position.X, position.Y + 24);
+
+                            return;
+                        }
+                    }
+
+                    else if (UIManager.MouseOverControl != null && UIManager.MouseOverControl.Tooltip is Control c)
+                    {
+                        c.Draw(batcher, position.X, position.Y + 24);
+                        return;
+                    }
+                }
+            }
+
+            if (
+                UIManager.MouseOverControl != null
+                && UIManager.MouseOverControl.HasTooltip
+                && !Mouse.IsDragging
+            )
+            {
+                if (UIManager.MouseOverControl.Tooltip is string text)
+                {
+                    if (_tooltip.IsEmpty || _tooltip.Text != text)
+                    {
+                        _tooltip.SetText(text);
+                    }
+
+                    _tooltip.Draw(batcher, position.X, position.Y + 24);
+                }
+                else if (UIManager.MouseOverControl.Tooltip is Control c)
+                {
+                    c.Draw(batcher, position.X, position.Y + 24);
+                }
+            }
+            else if (!_tooltip.IsEmpty)
+            {
+                _tooltip.Clear();
+            }
+        }
+
+        private ushort AssignGraphicByState()
+        {
+            int war = _world.InGame && _world.Player.InWarMode ? 1 : 0;
+
+            if (_cursorVisual != null)
+                return _cursorData[war, (ushort)_cursorVisual.Value];
+
+            if (_world.TargetManager.IsTargeting)
+            {
+                return _cursorData[war, (int)GameCursorVisualType.Targeting];
+            }
+
+            if (UIManager.IsDragging || IsDraggingCursorForced)
+            {
+                return _cursorData[war, (int)GameCursorVisualType.Dragging];
+            }
+
+            if (IsLoading)
+            {
+                return _cursorData[war, (int)GameCursorVisualType.Loading];
+            }
+
+            if (
+                UIManager.MouseOverControl != null
+                && UIManager.MouseOverControl.AcceptKeyboardInput
+                && UIManager.MouseOverControl.IsEditable
+            )
+            {
+                return _cursorData[war, (int)GameCursorVisualType.Editing];
+            }
+
+            ushort result = _cursorData[war, (int)GameCursorVisualType.FatPointingWest];
+
+            if (!UIManager.IsMouseOverWorld || ProfileManager.CurrentProfile == null)
+                return result;
+
+            Camera camera = Client.Game.Scene.Camera;
+
+            int windowCenterX = camera.Bounds.X + (camera.Bounds.Width >> 1);
+            int windowCenterY = camera.Bounds.Y + (camera.Bounds.Height >> 1);
+
+            return _cursorData[
+                war,
+                GetMouseDirection(
+                    windowCenterX,
+                    windowCenterY,
+                    Mouse.Position.X,
+                    Mouse.Position.Y,
+                    1
+                )
+            ];
+        }
+
+        public static int GetMouseDirection(int x1, int y1, int to_x, int to_y, int current_facing)
+        {
+            int shiftX = to_x - x1;
+            int shiftY = to_y - y1;
+            int hashf = 100 * (Sgn(shiftX) + 2) + 10 * (Sgn(shiftY) + 2);
+
+            if (shiftX != 0 && shiftY != 0)
+            {
+                shiftX = Math.Abs(shiftX);
+                shiftY = Math.Abs(shiftY);
+
+                if (shiftY * 5 <= shiftX * 2)
+                {
+                    hashf = hashf + 1;
+                }
+                else if (shiftY * 2 >= shiftX * 5)
+                {
+                    hashf = hashf + 3;
+                }
+                else
+                {
+                    hashf = hashf + 2;
+                }
+            }
+            else if (shiftX == 0)
+            {
+                if (shiftY == 0)
+                {
+                    return current_facing;
+                }
+            }
+
+            switch (hashf)
+            {
+                case 111:
+                    return (int)Direction.West; // W
+
+                case 112:
+                    return (int)Direction.Up; // NW
+
+                case 113:
+                    return (int)Direction.North; // N
+
+                case 120:
+                    return (int)Direction.West; // W
+
+                case 131:
+                    return (int)Direction.West; // W
+
+                case 132:
+                    return (int)Direction.Left; // SW
+
+                case 133:
+                    return (int)Direction.South; // S
+
+                case 210:
+                    return (int)Direction.North; // N
+
+                case 230:
+                    return (int)Direction.South; // S
+
+                case 311:
+                    return (int)Direction.East; // E
+
+                case 312:
+                    return (int)Direction.Right; // NE
+
+                case 313:
+                    return (int)Direction.North; // N
+
+                case 320:
+                    return (int)Direction.East; // E
+
+                case 331:
+                    return (int)Direction.East; // E
+
+                case 332:
+                    return (int)Direction.Down; // SE
+
+                case 333:
+                    return (int)Direction.South; // S
+            }
+
+            return current_facing;
+        }
+
+        private static int Sgn(int val)
+        {
+            int a = 0 < val ? 1 : 0;
+            int b = val < 0 ? 1 : 0;
+
+            return a - b;
+        }
+    }
+}

@@ -1,0 +1,18 @@
+[submodule "external/FNA"]
+	path = external/FNA
+	url = https://github.com/FNA-XNA/FNA.git
+[submodule "external/MP3Sharp"]
+	path = external/MP3Sharp
+	url = https://github.com/andreakarasho/MP3Sharp.git
+[submodule "external/FileEmbed"]
+	path = external/FileEmbed
+	url = https://github.com/SirCxyrtyx/FileEmbed.git
+[submodule "external/Myra"]
+	path = external/Myra
+	url = https://github.com/bittiez/Myra.git
+[submodule "external/FontStashSharp"]
+	path = external/FontStashSharp
+	url = https://github.com/FontStashSharp/FontStashSharp.git
+[submodule "external/XNAssets"]
+	path = external/XNAssets
+	url = https://github.com/rds1983/XNAssets.git

@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(AppTargetFramework)-android</TargetFramework>
+    <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <DefineConstants>$(DefineConstants);MONOGAME;ANDROID</DefineConstants>
+    <ApplicationId>Myra.Samples.AllWidgets</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Myra.Samples.AllWidgets\AllWidgets.cs" Link="AllWidgets.cs" />
+    <Compile Include="..\Myra.Samples.AllWidgets\AllWidgets.Generated.cs" Link="AllWidgets.Generated.cs" />
+    <Compile Include="..\Myra.Samples.AllWidgets\AllWidgetsGame.cs" Link="AllWidgetsGame.cs" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.Android" Version="$(AppMonoGameVersion)" />
+    <PackageReference Include="MonoGame.Content.Builder.Task" Version="$(AppMonoGameVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Myra\Myra.MonoGame.csproj" />
+  </ItemGroup>
+  
+  <Target Name="RestoreDotnetTools" BeforeTargets="Restore">
+    <Message Text="Restoring dotnet tools" Importance="High" />
+    <Exec Command="dotnet tool restore" />
+  </Target>
+</Project>

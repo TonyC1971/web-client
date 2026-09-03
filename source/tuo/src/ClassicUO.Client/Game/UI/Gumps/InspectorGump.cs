@@ -1,0 +1,324 @@
+﻿// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using ClassicUO.Assets;
+using ClassicUO.Configuration;
+using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.UI.Controls;
+using ClassicUO.Input;
+using ClassicUO.Renderer;
+using ClassicUO.Resources;
+using ClassicUO.Utility;
+using ClassicUO.Utility.Logging;
+using Microsoft.Xna.Framework;
+using SDL3;
+
+namespace ClassicUO.Game.UI.Gumps
+{
+    public class InspectorGump : Gump
+    {
+        private const int WIDTH = 500;
+        private const int HEIGHT = 400;
+        private readonly GameObject _obj;
+
+        public InspectorGump(World world, GameObject obj) : base(world, 0, 0)
+        {
+            X = 200;
+            Y = 100;
+            _obj = obj;
+            CanMove = true;
+            AcceptMouseInput = false;
+            CanCloseWithRightClick = true;
+
+            Add
+            (
+                new BorderControl
+                (
+                    0,
+                    0,
+                    WIDTH,
+                    HEIGHT,
+                    4
+                )
+            );
+
+            Add
+            (
+                new GumpPicTiled
+                (
+                    4,
+                    4,
+                    WIDTH - 8,
+                    HEIGHT - 8,
+                    0x0A40
+                )
+                {
+                    Alpha = 0.5f
+                }
+            );
+
+            Add
+            (
+                new GumpPicTiled
+                (
+                    4,
+                    4,
+                    WIDTH - 8,
+                    HEIGHT - 8,
+                    0x0A40
+                )
+                {
+                    Alpha = 0.5f
+                }
+            );
+
+            Add(new Label(ResGumps.ObjectInformation, true, 1153, font: 3) { X = 20, Y = 10 });
+
+            Add
+            (
+                new Line
+                (
+                    20,
+                    30,
+                    WIDTH - 50,
+                    1,
+                    0xFFFFFFFF
+                )
+            );
+
+            Add
+            (
+                new NiceButton
+                (
+                    WIDTH - 115,
+                    5,
+                    100,
+                    25,
+                    ButtonAction.Activate,
+                    TazLang.Get("inspector_clipboard", "To clipboard")
+                )
+                {
+                    ButtonParameter = 0
+                }
+            );
+
+            var scrollArea = new ScrollArea
+            (
+                20,
+                35,
+                WIDTH - 40,
+                HEIGHT - 45,
+                true
+            )
+            {
+                AcceptMouseInput = true
+            };
+
+            Add(scrollArea);
+
+            var databox = new DataBox(0, 0, 1, 1);
+            databox.WantUpdateSize = true;
+            scrollArea.Add(databox);
+
+            Dictionary<string, string> dict = GetGameObjectProperties(obj);
+
+            if (dict != null)
+            {
+                int startX = 5;
+                int startY = 5;
+
+                foreach (KeyValuePair<string, string> item in dict.OrderBy(s => s.Key))
+                {
+                    var label = new Label
+                    (
+                        item.Key + ":",
+                        true,
+                        33,
+                        font: 1,
+                        style: FontStyle.BlackBorder
+                    )
+                    {
+                        X = startX,
+                        Y = startY
+                    };
+
+                    databox.Add(label);
+
+                    int height = label.Height;
+
+                    label = new Label
+                    (
+                        item.Value,
+                        true,
+                        1153,
+                        font: 1,
+                        style: FontStyle.BlackBorder,
+                        maxwidth: WIDTH - 65 - 200
+                    )
+                    {
+                        X = startX + 200,
+                        Y = startY,
+                        AcceptMouseInput = true,
+                        CanMove = true
+                    };
+
+                    label.MouseUp += OnLabelClick;
+
+                    if (label.Height > 0)
+                    {
+                        height = label.Height;
+                    }
+
+                    databox.Add(label);
+
+                    databox.Add
+                    (
+                        new Line
+                        (
+                            startX,
+                            startY + height + 2,
+                            WIDTH - 65,
+                            1,
+                            Color.Gray.PackedValue
+                        )
+                    );
+
+                    startY += height + 4;
+                }
+            }
+
+            //databox.ReArrangeChildren();
+        }
+
+        public override void OnButtonClick(int buttonID)
+        {
+            if (buttonID == 0) // dump
+            {
+                Dictionary<string, string> dict = GetGameObjectProperties(_obj);
+
+                if (dict != null)
+                {
+                    StringBuilder sb = new();
+                    sb.AppendLine("###################################################");
+                    sb.AppendLine($"CUO version: {CUOEnviroment.Version}");
+                    sb.AppendLine($"OBJECT TYPE: {_obj.GetType()}");
+
+                    foreach (KeyValuePair<string, string> item in dict.OrderBy(s => s.Key)) sb.AppendLine($"{item.Key} = {item.Value}");
+
+                    sb.AppendLine("###################################################");
+                    sb.AppendLine("");
+
+                    sb.ToString().CopyToClipboard();
+                    GameActions.Print(World, $"Copied to clipboard!", Constants.HUE_SUCCESS);
+                }
+            }
+        }
+
+        private void OnLabelClick(object sender, MouseEventArgs e)
+        {
+            var l = (Label) sender;
+
+            if (e.Button == MouseButtonType.Left && l != null)
+            {
+                ClassicUO.Utility.Clipboard.SetClipboardText(l.Text);
+                GameActions.Print(World, $"Copied to clipboard: {l.Text}");
+            }
+        }
+
+        private Dictionary<string, string> GetGameObjectProperties(GameObject obj)
+        {
+            var dict = new Dictionary<string, string>();
+
+            dict["Graphics"] = $"0x{obj.Graphic:X4}";
+            dict["Hue"] = $"{obj.Hue}";
+            dict["Position"] = $"X={obj.X}, Y={obj.Y}, Z={obj.Z}";
+            dict["PriorityZ"] = obj.PriorityZ.ToString();
+            dict["Distance"] = obj.Distance.ToString();
+            dict["AllowedToDraw"] = obj.AllowedToDraw.ToString();
+            dict["AlphaHue"] = obj.AlphaHue.ToString();
+            dict["HasLineOfSightFromPlayer"] = obj.HasLineOfSightFrom().ToString();
+
+            switch (obj)
+            {
+                case Mobile mob:
+
+                    dict["Type"] = "Mobile";
+                    dict["Serial"] = $"0x{mob.Serial:X8}";
+                    dict["Flags"] = mob.Flags.ToString();
+                    dict["Notoriety"] = mob.NotorietyFlag.ToString();
+                    dict["Title"] = mob.Title ?? string.Empty;
+                    dict["Name"] = mob.Name ?? string.Empty;
+                    dict["HP"] = $"{mob.Hits}/{mob.HitsMax}";
+                    dict["Mana"] = $"{mob.Mana}/{mob.ManaMax}";
+                    dict["Stamina"] = $"{mob.Stamina}/{mob.StaminaMax}";
+                    dict["SpeedMode"] = mob.SpeedMode.ToString();
+                    dict["Race"] = mob.Race.ToString();
+                    dict["IsRenamable"] = mob.IsRenamable.ToString();
+                    dict["Direction"] = mob.Direction.ToString();
+                    dict["IsDead"] = mob.IsDead.ToString();
+                    dict["IsDrivingABoat"] = mob.IsDrivingBoat.ToString();
+                    dict["IsMounted"] = mob.IsMounted.ToString();
+
+                    break;
+
+                case Item it:
+
+                    dict["Type"] = "Item";
+                    dict["Serial"] = $"0x{it.Serial:X8}";
+                    dict["Flags"] = it.Flags.ToString();
+                    dict["HP"] = $"{it.Hits}/{it.HitsMax}";
+                    dict["IsCoins"] = it.IsCoin.ToString();
+                    dict["Amount"] = it.Amount.ToString();
+                    dict["Container"] = $"0x{it.Container:X8}";
+                    dict["Layer"] = it.Layer.ToString();
+                    dict["Price"] = it.Price.ToString();
+                    dict["Direction"] = it.Direction.ToString();
+                    dict["IsMulti"] = it.IsMulti.ToString();
+                    dict["MultiGraphic"] = $"0x{it.MultiGraphic:X4}";
+                    dict["IsImpassable"] = it.ItemData.IsImpassable.ToString();
+                    dict["CustomName"] = it.CustomName;
+
+                    break;
+
+                case Static st:
+                    ref StaticTiles staticData = ref Client.Game.UO.FileManager.TileData.StaticData[st.OriginalGraphic];
+                    dict["Type"] = "Static";
+                    dict["IsVegetation"] = st.IsVegetation.ToString();
+                    dict["IsWall"] = staticData.IsWall.ToString();
+                    dict["IsImpassable"] = staticData.IsImpassable.ToString();
+
+                    break;
+
+                case Multi multi:
+
+                    dict["Type"] = "Multi";
+                    dict["State"] = multi.State.ToString();
+                    dict["IsMovable"] = multi.IsMovable.ToString();
+                    dict["IsImpassable"] = multi.ItemData.IsImpassable.ToString();
+                    dict["IsWall"] = multi.ItemData.IsWall.ToString();
+
+                    break;
+
+                case Land land:
+
+                    dict["Type"] = "Land";
+                    dict["IsFlat"] = (!land.IsStretched).ToString();
+                    dict["NormalLeft"] = land.NormalLeft.ToString();
+                    dict["NormalRight"] = land.NormalRight.ToString();
+                    dict["NormalTop"] = land.NormalTop.ToString();
+                    dict["NormalBottom"] = land.NormalBottom.ToString();
+                    dict["MinZ"] = land.MinZ.ToString();
+                    dict["AvgZ"] = land.AverageZ.ToString();
+                    dict["YOffsets"] = land.YOffsets.ToString();
+                    dict["IsImpassable"] = land.TileData.IsImpassable.ToString();
+
+                    break;
+            }
+
+            return dict;
+        }
+    }
+}

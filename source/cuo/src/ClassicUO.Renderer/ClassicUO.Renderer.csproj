@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- Propagate BROWSER_WASM define so the wasm-only diagnostic
+       prints inside UltimaBatcher2D/RenderTargets are compiled
+       in when classicuo-wasm publishes with -p:IsBrowserWasm=true. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClassicUO.Utility\ClassicUO.Utility.csproj" />
+    <ProjectReference Include="..\ClassicUO.Assets\ClassicUO.Assets.csproj" />
+    <ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" />
+  </ItemGroup>
+
+  <!-- P4d.6: shaders/*.fxc are embedded via [FileEmbed.FileEmbed("shaders/...")]
+       in Batcher2D.cs.  MSBuild's incremental build does NOT track FileEmbed
+       inputs, so an .fxc edit alone leaves the cached Renderer.dll (and the
+       stale shader bytes inside it) in place.  Listing them as build inputs
+       forces a recompile when any .fxc changes.  Without this, P4d.6 wasted
+       hours chasing an empty shader bug that was actually a stale embed. -->
+  <ItemGroup>
+    <UpToDateCheckInput Include="shaders\*.fxc" />
+    <None Include="shaders\*.fxc" CopyToOutputDirectory="Never" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,172 @@
+<!--
+  Mercury-stack native wiring for classicuo-wasm (Iter 3).
+
+  Layout:
+    SDL2.a (sdl2-compat, bundles SDL3 internally) — Mercury prebuilt.
+    FAudio.a — Mercury prebuilt (audio).
+    FNA3D + MojoShader — COMPILED FROM SOURCE here so emcc picks up
+      the -sUSE_WEBGL2 / -sMIN_WEBGL_VERSION=2 flags. Mercury's
+      FNA3D.a was built targeting desktop GL, not WebGL, which is
+      why OpenGL driver selfTest fails at runtime with
+      "No supported FNA3D driver found!" even though OPENGL_*
+      symbols are in the archive. Compiling the same source the
+      Iter 1 pipeline used, against Mercury's emsdk + SDL3 symbols
+      (exported from SDL2.a's bundled SDL3), keeps everything else
+      Mercury (patched runtime + threads + AOT cross).
+
+  Consumer: classicuo-wasm.csproj imports this file.
+-->
+<Project>
+  <PropertyGroup>
+    <WasmBuildNative>true</WasmBuildNative>
+    <WasmCachePath Condition=" '$(WasmCachePath)' == '' ">$(LOCALAPPDATA)\em_cache</WasmCachePath>
+
+    <!-- FNA3D / MojoShader source tree. Works in both Windows
+         (relative to development/webclient/) and WSL (relative to the
+         rsync'd ~/cuowasm/development/webclient/). No absolute paths,
+         no junction dependency. -->
+    <FnaLibDirNS>$(MSBuildThisFileDirectory)..\cuo\external\FNA\lib</FnaLibDirNS>
+    <Fna3dDirNS>$(FnaLibDirNS)\FNA3D</Fna3dDirNS>
+    <MojoShaderDirNS>$(Fna3dDirNS)\MojoShader</MojoShaderDirNS>
+
+    <!-- Vendored SDL2 release-2.30.10 headers. The .NET Emscripten 3.1.56
+         pack ships SDL 1.3 in include/SDL/ but no include/SDL2/, so we
+         can't rely on -iwithsysroot/include/SDL2 (was the iter-1 trick;
+         broke after a `rm -rf em_cache` because the SDL2 ports download
+         races against fakesdl staging). See source/vendor/sdl2-headers/README.md. -->
+    <SdlHeadersDirNS>$(MSBuildThisFileDirectory)..\vendor\sdl2-headers\include\SDL2</SdlHeadersDirNS>
+
+    <!-- -I flags for emcc when it compiles the FNA3D + MojoShader
+         .c files inline during the final link. Same set Iter 1 used;
+         we now use MSBuild-resolved relative paths instead of the old
+         absolute-path scheme so the build is portable across hosts. -->
+    <!-- FNA3D.c and our native-shims/SDL2.c both do `#include <SDL.h>`,
+         the SDL2 convention. We supply the headers via -I to the vendored
+         tree under source/vendor/sdl2-headers/include/SDL2/. -I wins over
+         -iwithsysroot search order in clang, so the .NET pack's stub
+         fakesdl/SDL.h ("use -sUSE_SDL!") cannot intercept us. -->
+    <!-- Each -I path must be quoted because the project's absolute
+         path may contain a space (e.g. installs under "Program Files"
+         or any folder with a space). Without the embedded quotes MSBuild
+         writes bare tokens into emcc-compile.rsp and emcc then sees
+         "-IC:\Program" + "Files\..." as two args, which produces
+         "No such file or directory" on MojoShader.h. -->
+    <!-- 2026-04-26: -DMOJOSHADER_FLIP_RENDERTARGET is on by default in
+         FNA3D's CMakeLists.txt (lib/FNA3D/CMakeLists.txt:62 + the
+         matching MojoShader/CMakeLists.txt:159) but absent from the
+         iter1 / Mercury wasm flag set we inherited. Without it,
+         MojoShader doesn't emit the `gl_Position.y *= vpFlip;` tail
+         that FNA3D's draw path uses to invert vertex Y when rendering
+         to a custom RenderTarget2D — the projection's M22 negation is
+         left unbalanced and triangles drawn into a custom FBO end up
+         back-faced relative to UltimaBatcher2D's CullCounterClockwise
+         rasterizer state, so glDrawElements is silently culled while
+         glClear still lands. That manifested as the long-standing
+         "writing to a custom RenderTarget2D produces zero pixels" trap
+         and forced us to short-circuit PrepareLightsRendering /
+         RenderTargets.Draw / UiRT under BROWSER_WASM. Adding the
+         define re-enables the canonical desktop path on wasm. -->
+    <_FnaCompileFlags>-DFNA3D_DRIVER_OPENGL;-DSUPPORT_PROFILE_HLSL=0;-DSUPPORT_PROFILE_METAL=0;-DSUPPORT_PROFILE_GLSPIRV=0;-DSUPPORT_PROFILE_SPIRV=0;-DMOJOSHADER_NO_VERSION_INCLUDE;-DMOJOSHADER_EFFECT_SUPPORT;-DMOJOSHADER_FLIP_RENDERTARGET;"-I$(SdlHeadersDirNS)";"-I$(Fna3dDirNS)\include";"-I$(Fna3dDirNS)\src";"-I$(MojoShaderDirNS)";"-I$(MojoShaderDirNS)\profiles";-Wno-unused-command-line-argument;-Wno-strict-prototypes</_FnaCompileFlags>
+
+    <!-- Memory pinned at 2 GiB, NO growth. ALLOW_MEMORY_GROWTH=1
+         calls WebAssembly.Memory.grow() which detaches every
+         ArrayBuffer view held over it. SGen caches DataViews on
+         managed heap segments; the next GC cycle after a grow
+         reads from the detached view and hits "memory access out
+         of bounds" → `sgen_stop_world` → `sgen_alloc_obj_nolock`.
+         Pinning matches the Iter 1 target's fix (docs/TROUBLESHOOTING
+         "Custom FBO glDrawElements silently dropped"). 2 GiB covers
+         the MEMFS .mul mount (~629 MiB), FNA3D RTs (3× 4096² + 2×
+         2048² = 224 MiB on resize to full viewport), AOT wasm
+         (~100 MiB), and Mono's working set with ~700 MiB headroom.
+         Trade-off: browser tab reserves 2 GiB of VA up front. Safe
+         on 32 GB host; mobile / low-end desktop would need a split
+         profile. mimalloc kept — it's faster than emcc's dlmalloc. -->
+    <!-- PER-CLIENT heap size (operator 2026-07-09 "el mini es el cliente de móvil — aprieta; cuo/tuo a 3GB"):
+         the wasm heap stays FIXED (growth=0, mimalloc — growth under MT was the crash source), but the SIZE
+         is now a property each wrapper csproj overrides. Defaults to the historical 2 GiB when unset.
+         Budgets (measured 2026-07-09, uonexus pool raw sizes): mini ultra fileset ~490 MiB MEMFS + ~100 AOT
+         + ~100 staging + ~200 Mono heap = mini 1 GiB. cuo/tuo full fileset ~740 MiB = 3 GiB per operator
+         (headroom for future filesets/RTs; NOTE wasm32+Mono above 2 GiB is the 4GB-address-space mode -
+         validated by build+boot smoke; if a runtime regression appears, dropping back is this one line). -->
+    <UoWasmMemBytes Condition="'$(UoWasmMemBytes)' == ''">2147483648</UoWasmMemBytes>
+    <_MemoryFlags>-sINITIAL_MEMORY=$(UoWasmMemBytes);-sALLOW_MEMORY_GROWTH=0;-sMAXIMUM_MEMORY=$(UoWasmMemBytes);-sMALLOC=mimalloc</_MemoryFlags>
+
+    <!-- WebGL2. MIN_WEBGL_VERSION=2 forces an ES 3.0 context with
+         MRT + VAO + instancing that FNA3D needs.
+         OFFSCREENCANVAS_SUPPORT is required for threads mode.
+         DO NOT ADD `OFFSCREENCANVASES_TO_PTHREAD=#canvas` here —
+         on .NET 10 MT the emscripten pthread_create runs for an
+         internal helper pthread (NOT the Mono deputy, which spawns
+         via `new Worker(...)` in dotnet.runtime.js). If the flag is
+         set, emscripten hijacks `canvas.transferControlToOffscreen()`
+         during that first pthread_create, leaving the main.js
+         `[mt-canvas]` shim unable to hand the canvas to the deputy
+         (InvalidStateError "Cannot transfer control from a canvas
+         for more than one time") and FNA3D still crashes on
+         `GL.currentContext === null`. The real handoff happens in
+         `source/webclient/classicuo-wasm/wwwroot/main.js` preRun — see the
+         `__mtCanvasWired` Worker.postMessage intercept. (Dead-end
+         verified 2026-04-21 in commit d44c6e6 soak test.) -->
+    <_WebGLFlags>-sMIN_WEBGL_VERSION=2;-sOFFSCREENCANVAS_SUPPORT;$(_MemoryFlags)</_WebGLFlags>
+
+    <!-- IDBFS for /Data persistence. Preserved from Iter 1. -->
+    <_FsFlags>-lidbfs.js</_FsFlags>
+
+    <!-- No -sUSE_SDL=2 needed: SDL2 headers come from -I to the
+         vendored copy in source/vendor/sdl2-headers/, and the
+         implementation comes from vendor/mercury-statics/SDL2.a.
+         Adding -sUSE_SDL=2 here would only waste cycles staging
+         emscripten's own SDL2 port into em_cache (which we'd
+         then ignore via -I priority anyway). -->
+    <EmccExtraCFlags>$(_FnaCompileFlags)</EmccExtraCFlags>
+    <EmccExtraLDFlags>$(_WebGLFlags);$(_FsFlags);$(_FnaCompileFlags)</EmccExtraLDFlags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SDL2.c / __Native.c / SDL3.c / sdl3_stubs.c: shim .c files
+         that register "SDL2", "__Native", and "SDL3" as PInvoke
+         module names (WasmApp.Common.targets:_WasmPInvokeModules
+         derives the module list from NativeFileReference basenames).
+         Without these, CUO's `[DllImport("SDL3", EntryPoint =
+         "sdl3_drain_events")]` (GameController.cs) throws
+         DllNotFoundException at runtime — exactly what blocked
+         Iter 3 the first time we dropped the sdl-compat .targets.
+         SDL3.c also supplies the strong `sdl3_drain_events` symbol;
+         sdl3_stubs.c carries 1028 weak empty stubs for the
+         SDL3.Legacy.cs DllImports — weak, so SDL2.a's real SDL3
+         symbols win at link time. -->
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)native-shims\SDL2.c" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)native-shims\__Native.c" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)native-shims\SDL3.c" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)native-shims\sdl3_stubs.c" />
+
+    <!-- sdl2-compat (bundles SDL3). Satisfies FNA's
+         [DllImport("SDL2")] AND FNA3D's SDL symbol refs via the
+         bundled SDL3 inside the archive. -->
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)..\vendor\mercury-statics\SDL2.a" />
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)..\vendor\mercury-statics\FAudio.a" />
+
+    <!-- FNA3D sources — rebuilt so emcc applies WebGL2 flags
+         (Mercury's prebuilt FNA3D.a targets desktop GL). -->
+    <NativeFileReference Include="$(Fna3dDirNS)\src\FNA3D.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)\src\FNA3D_Driver_OpenGL.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)\src\FNA3D_Image.c" />
+    <NativeFileReference Include="$(Fna3dDirNS)\src\FNA3D_PipelineCache.c" />
+
+    <!-- MojoShader sources — all profiles must link even when
+         disabled at build time (dispatch table stubs). -->
+    <NativeFileReference Include="$(MojoShaderDirNS)\mojoshader.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\mojoshader_common.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\mojoshader_opengl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\mojoshader_effects.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_arb1.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_bytecode.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_common.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_d3d.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_glsl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_hlsl.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_metal.c" />
+    <NativeFileReference Include="$(MojoShaderDirNS)\profiles\mojoshader_profile_spirv.c" />
+  </ItemGroup>
+</Project>

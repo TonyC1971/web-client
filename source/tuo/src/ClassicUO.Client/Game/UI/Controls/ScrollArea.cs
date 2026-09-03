@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using ClassicUO.Input;
+using ClassicUO.Renderer;
+using Microsoft.Xna.Framework;
+using System;
+
+namespace ClassicUO.Game.UI.Controls
+{
+    public enum ScrollbarBehaviour
+    {
+        ShowWhenDataExceedFromView,
+        ShowAlways
+    }
+
+    public class ScrollArea : Control
+    {
+        /// <summary>
+        /// Width reserved on the right edge for the normal scrollbar. Content is
+        /// always clipped to this gutter, so callers drawing at the right edge must
+        /// account for it or their content will be hidden.
+        /// </summary>
+        public const int SCROLLBAR_WIDTH = 14;
+
+        private bool _isNormalScroll;
+        private readonly ScrollBarBase _scrollBar;
+
+        public ScrollArea
+        (
+            int x,
+            int y,
+            int w,
+            int h,
+            bool normalScrollbar,
+            int scroll_max_height = -1
+        )
+        {
+            X = x;
+            Y = y;
+            Width = w;
+            Height = h;
+            _isNormalScroll = normalScrollbar;
+
+            if (normalScrollbar)
+            {
+                _scrollBar = new ScrollBar(Width - SCROLLBAR_WIDTH, 0, Height);
+            }
+            else
+            {
+                _scrollBar = new ScrollFlag
+                {
+                    X = Width - 19,
+                    Height = h
+                };
+
+                Width += 15;
+            }
+
+            ScrollMaxHeight = scroll_max_height;
+
+            _scrollBar.MinValue = 0;
+            _scrollBar.MaxValue = scroll_max_height >= 0 ? scroll_max_height : Height;
+            _scrollBar.Parent = this;
+
+            AcceptMouseInput = true;
+            WantUpdateSize = false;
+            CanMove = true;
+            ScrollbarBehaviour = ScrollbarBehaviour.ShowWhenDataExceedFromView;
+        }
+
+
+        public int ScrollMaxHeight { get; set; } = -1;
+        public ScrollbarBehaviour ScrollbarBehaviour { get; set; }
+        public int ScrollValue => _scrollBar.Value;
+        public int ScrollMinValue => _scrollBar.MinValue;
+        public int ScrollMaxValue => _scrollBar.MaxValue;
+
+        public Rectangle ScissorRectangle;
+
+        public override void PreDraw()
+        {
+            base.PreDraw();
+            CalculateScrollBarMaxValue();
+
+            if (ScrollbarBehaviour == ScrollbarBehaviour.ShowAlways)
+            {
+                _scrollBar.IsVisible = true;
+            }
+            else if (ScrollbarBehaviour == ScrollbarBehaviour.ShowWhenDataExceedFromView)
+            {
+                _scrollBar.IsVisible = _scrollBar.MaxValue > _scrollBar.MinValue;
+            }
+        }
+
+        public void UpdateScrollbarPosition()
+        {
+            if (_isNormalScroll)
+                _scrollBar.X = Width - SCROLLBAR_WIDTH;
+            else
+                _scrollBar.X = Width - 19;
+        }
+
+        public void ResetScrollbarPosition() => _scrollBar?.ResetScrollPosition();
+
+        public int ScrollBarWidth()
+        {
+            if (_scrollBar == null)
+                return 0;
+            return _scrollBar.Width;
+        }
+
+        public void Scroll(bool isup)
+        {
+            if (isup)
+            {
+                _scrollBar.Value -= _scrollBar.ScrollStep;
+            }
+            else
+            {
+                _scrollBar.Value += _scrollBar.ScrollStep;
+            }
+        }
+
+        public override bool Draw(UltimaBatcher2D batcher, int x, int y)
+        {
+            if (IsDisposed)
+            {
+                return false;
+            }
+
+            var scrollbar = (ScrollBarBase)Children[0];
+            scrollbar.Draw(batcher, x + scrollbar.X, y + scrollbar.Y);
+
+            if (batcher.ClipBegin(x + ScissorRectangle.X, y + ScissorRectangle.Y, Width - SCROLLBAR_WIDTH + ScissorRectangle.Width, Height + ScissorRectangle.Height))
+            {
+                for (int i = 1; i < Children.Count; i++)
+                {
+                    IGui child = Children[i];
+
+                    if (!child.IsVisible)
+                    {
+                        continue;
+                    }
+
+                    int finalY = y + child.Y - scrollbar.Value + ScissorRectangle.Y;
+
+                    child.Draw(batcher, x + child.X, finalY);
+                }
+
+                batcher.ClipEnd();
+            }
+
+            return true;
+        }
+
+        public override void OnMouseWheel(MouseEventType delta)
+        {
+            switch (delta)
+            {
+                case MouseEventType.WheelScrollUp:
+                    _scrollBar.Value -= _scrollBar.ScrollStep;
+
+                    break;
+
+                case MouseEventType.WheelScrollDown:
+                    _scrollBar.Value += _scrollBar.ScrollStep;
+
+                    break;
+            }
+        }
+
+        public override void Clear()
+        {
+            for (int i = 1; i < Children.Count; i++)
+            {
+                Children[i].Dispose();
+            }
+        }
+
+        private void CalculateScrollBarMaxValue()
+        {
+            _scrollBar.Height = ScrollMaxHeight >= 0 ? ScrollMaxHeight : Height;
+            bool maxValue = _scrollBar.Value == _scrollBar.MaxValue && _scrollBar.MaxValue != 0;
+
+            int startX = 0, startY = 0, endX = 0, endY = 0;
+
+            for (int i = 1; i < Children.Count; i++)
+            {
+                IGui c = Children[i];
+
+                if (c.IsVisible && !c.IsDisposed)
+                {
+                    if (c.X < startX)
+                    {
+                        startX = c.X;
+                    }
+
+                    if (c.Y < startY)
+                    {
+                        startY = c.Y;
+                    }
+
+                    if (c.Bounds.Right > endX)
+                    {
+                        endX = c.Bounds.Right;
+                    }
+
+                    if (c.Bounds.Bottom > endY)
+                    {
+                        endY = c.Bounds.Bottom;
+                    }
+                }
+            }
+
+            int height = Math.Abs(startY) + Math.Abs(endY) - _scrollBar.Height;
+            height = Math.Max(0, height - (-ScissorRectangle.Y + ScissorRectangle.Height));
+
+            if (height > 0)
+            {
+                _scrollBar.MaxValue = height;
+
+                if (maxValue)
+                {
+                    _scrollBar.Value = _scrollBar.MaxValue;
+                }
+            }
+            else
+            {
+                _scrollBar.Value = _scrollBar.MaxValue = 0;
+            }
+
+            _scrollBar.UpdateOffset(0, Offset.Y);
+
+            for (int i = 1; i < Children.Count; i++)
+            {
+                Children[i].UpdateOffset(0, -_scrollBar.Value + ScissorRectangle.Y);
+            }
+        }
+    }
+}

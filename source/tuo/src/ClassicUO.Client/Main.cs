@@ -1,0 +1,646 @@
+﻿// SPDX-License-Identifier: BSD-2-Clause
+
+using ClassicUO.Configuration;
+using ClassicUO.Game;
+using ClassicUO.Game.Managers;
+using ClassicUO.IO;
+using ClassicUO.Network;
+using ClassicUO.Resources;
+using ClassicUO.Utility;
+using ClassicUO.Utility.Logging;
+using SDL3;
+using System;
+using System.Globalization;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+namespace ClassicUO
+{
+    internal static class Bootstrap
+    {
+        [UnmanagedCallersOnly(EntryPoint = "Initialize", CallConvs = new Type[] { typeof(CallConvCdecl) })]
+        static unsafe void Initialize(IntPtr* argv, int argc, HostBindings* hostSetup)
+        {
+            string[] args = new string[argc];
+            for (int i = 0; i < argc; i++)
+            {
+                args[i] = Marshal.PtrToStringAnsi(argv[i]);
+            }
+
+            var host = new UnmanagedAssistantHost(hostSetup);
+            Boot(host, args);
+        }
+
+
+        [STAThread]
+        public static void Main(string[] args) => Boot(null, args);
+
+
+        public static void Boot(UnmanagedAssistantHost pluginHost, string[] args)
+        {
+            CopyRequiredLibs();
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            TazLang.Load();
+            Log.Start(LogTypes.All);
+
+            //DllMap.Init();
+
+            CUOEnviroment.GameThread = Thread.CurrentThread;
+            CUOEnviroment.GameThread.Name = "TUO_MAIN_THREAD";
+
+#if BROWSER_WASM
+            // v0.7.9 iter 25: surface task exceptions (fire-and-forget,
+            // background loops) that would otherwise vanish under wasm.
+            // The deputy worker's TaskScheduler doesn't bubble them up
+            // to UnhandledException by default. Connection-phase
+            // exceptions in ReceiveLoopAsync / NetworkLoopAsync are
+            // currently opaque [object WebAssembly.Exception] in
+            // playwright; this prints the actual type + message.
+            System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, e) =>
+            {
+                Log.Error($"[unobserved-task] {e.Exception.GetType().FullName}: {e.Exception.Message}\n{e.Exception}");
+                e.SetObserved();
+            };
+#endif
+
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                var sb = new StringBuilder();
+#if DEV_BUILD || DEBUG
+                sb.Append($"[TazUO - DEV (DEBUG: {CUOEnviroment.Debug}) - {CUOEnviroment.Version} - {DateTime.Now}]");
+#else
+                sb.Append($"[TazUO [STANDARD_BUILD] - {CUOEnviroment.Version} - {DateTime.Now}]");
+#endif
+                sb.Append($" [{RuntimeInformation.FrameworkDescription}] [{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture})]");
+
+                sb.Append($" [{Thread.CurrentThread.Name}]");
+
+
+                if (Settings.GlobalSettings != null)
+                    sb.Append($"[{Settings.GlobalSettings.ClientVersion}]");
+
+                sb.AppendLine();
+
+                sb.AppendFormat("Exception:\n{0}\n", e.ExceptionObject);
+                sb.AppendLine();
+
+                string suggestedFix = CrashSuggestedFix.Get(e.ExceptionObject);
+
+                HtmlCrashLogGen.Generate(sb.ToString(), additional_notes: suggestedFix.NotNullNotEmpty() ? suggestedFix : string.Empty);
+
+#if !DEBUG && !BROWSER_WASM
+                // v5.3 sync (2026-07-20): upstream added automatic crash reporting
+                // (HttpClient POST to their webhook). NOT on the web build: it would
+                // ship player crash dumps to a third party from OUR origin, the strict
+                // CSP blocks the request anyway, and the browser build already has its
+                // own black box ([crash-report] console + uo-alive localStorage tail).
+                if (!suggestedFix.NotNullNotEmpty())
+                    new CrashReporter().SendMessage(sb.ToString());
+#endif
+
+
+                if (suggestedFix != null)
+                    sb.AppendLine(suggestedFix);
+
+                Log.Panic(e.ExceptionObject.ToString());
+                string path = Path.Combine(CUOEnviroment.ExecutablePath, "Logs");
+
+                if (!Directory.Exists(path))
+                    Directory.CreateDirectory(path);
+
+                using (var crashfile = new LogFile(path, "crash.txt"))
+                {
+                    crashfile.Write(sb.ToString());
+                }
+            };
+
+            ReadSettingsFromArgs(args);
+            Log.Trace("[boot-debug] step A: post-ReadSettingsFromArgs");
+
+            if (CUOEnviroment.IsHighDPI)
+            {
+                Environment.SetEnvironmentVariable("FNA_GRAPHICS_ENABLE_HIGHDPI", "1");
+            }
+
+            // NOTE: this is a workaroud to fix d3d11 on windows 11 + scale windows
+            Environment.SetEnvironmentVariable("FNA3D_D3D11_FORCE_BITBLT", "1");
+            Environment.SetEnvironmentVariable("FNA3D_BACKBUFFER_SCALE_NEAREST", "1");
+            Environment.SetEnvironmentVariable("FNA3D_OPENGL_FORCE_COMPATIBILITY_PROFILE", "1");
+            Log.Trace("[boot-debug] step B: pre-SDL.SetHint env vars");
+            Environment.SetEnvironmentVariable(SDL.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+            Log.Trace("[boot-debug] step C: post-SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH");
+            Environment.SetEnvironmentVariable("PATH", Environment.GetEnvironmentVariable("PATH") + ";" + Path.Combine(CUOEnviroment.ExecutablePath, "Data", "Plugins"));
+            Log.Trace("[boot-debug] step D: post-PATH set");
+
+            string globalSettingsPath = Settings.GetSettingsFilepath();
+            Log.Trace($"[boot-debug] step E: globalSettingsPath={globalSettingsPath}");
+
+            if (!Directory.Exists(Path.GetDirectoryName(globalSettingsPath)) || !File.Exists(globalSettingsPath))
+            {
+                Log.Trace("[boot-debug] step F: settings file missing, calling Save()");
+                // settings specified in path does not exists, make new one
+                {
+                    // TODO:
+                    Settings.GlobalSettings.Save();
+                }
+                Log.Trace("[boot-debug] step G: post-Save");
+            }
+            else
+            {
+                Log.Trace("[boot-debug] step F': settings file exists, skipping Save");
+            }
+
+            Log.Trace("[boot-debug] step H: pre-ConfigurationResolver.Load");
+            Settings.GlobalSettings = ConfigurationResolver.Load(globalSettingsPath, SettingsJsonContext.RealDefault.Settings);
+            Log.Trace($"[boot-debug] step I: post-Load (GlobalSettings null? {Settings.GlobalSettings == null})");
+
+            ReadSettingsFromArgs(args);
+            Log.Trace("[boot-debug] step J: post-second-ReadSettingsFromArgs");
+
+            // still invalid, cannot load settings
+            if (Settings.GlobalSettings == null)
+            {
+                Settings.GlobalSettings = new Settings();
+                Settings.GlobalSettings.Save();
+            }
+            Log.Trace($"[boot-debug] step K: lang='{Settings.GlobalSettings.Language}' UOdir='{Settings.GlobalSettings.UltimaOnlineDirectory}' ver='{Settings.GlobalSettings.ClientVersion}'");
+
+            if (string.IsNullOrWhiteSpace(Settings.GlobalSettings.Language))
+            {
+                Log.Trace("language is not set. Trying to get the OS language.");
+                try
+                {
+                    Settings.GlobalSettings.Language = CultureInfo.InstalledUICulture.ThreeLetterWindowsLanguageName;
+
+                    if (string.IsNullOrWhiteSpace(Settings.GlobalSettings.Language))
+                    {
+                        Log.Warn("cannot read the OS language. Rolled back to ENU");
+
+                        Settings.GlobalSettings.Language = "ENU";
+                    }
+
+                    Log.Trace($"language set: '{Settings.GlobalSettings.Language}'");
+                }
+                catch
+                {
+                    Log.Warn("cannot read the OS language. Rolled back to ENU");
+
+                    Settings.GlobalSettings.Language = "ENU";
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(Settings.GlobalSettings.UltimaOnlineDirectory))
+            {
+                Settings.GlobalSettings.UltimaOnlineDirectory = CUOEnviroment.ExecutablePath;
+            }
+
+            const uint INVALID_UO_DIRECTORY = 0x100;
+            const uint INVALID_UO_VERSION = 0x200;
+
+            uint flags = 0;
+
+            bool uoDirExists = Directory.Exists(Settings.GlobalSettings.UltimaOnlineDirectory);
+            string tiledataPath = Path.Combine(Settings.GlobalSettings.UltimaOnlineDirectory, "tiledata.mul");
+            bool tiledataExists = File.Exists(tiledataPath);
+            Log.Trace($"[boot-debug] step L.0: uoDirExists={uoDirExists} tiledataPath={tiledataPath} tiledataExists={tiledataExists}");
+            if (!uoDirExists || !tiledataExists)
+            {
+                flags |= INVALID_UO_DIRECTORY;
+            }
+
+            string clientVersionText = Settings.GlobalSettings.ClientVersion;
+
+            if (!ClientVersionHelper.IsClientVersionValid(Settings.GlobalSettings.ClientVersion, out ClientVersion clientVersion))
+            {
+                Log.Warn($"Client version [{clientVersionText}] is invalid, let's try to read the client.exe");
+
+                // mmm something bad happened, try to load from client.exe [windows only]
+                if (!ClientVersionHelper.TryParseFromFile(Path.Combine(Settings.GlobalSettings.UltimaOnlineDirectory, "client.exe"), out clientVersionText) || !ClientVersionHelper.IsClientVersionValid(clientVersionText, out clientVersion))
+                {
+                    Log.Error("Invalid client version: " + clientVersionText);
+
+                    flags |= INVALID_UO_VERSION;
+                }
+                else
+                {
+                    Log.Trace($"Found a valid client.exe [{clientVersionText} - {clientVersion}]");
+
+                    // update the wrong/missing client version in settings.json
+                    Settings.GlobalSettings.ClientVersion = clientVersionText;
+                }
+            }
+
+            Log.Trace($"[boot-debug] step L: flags=0x{flags:X}");
+            if (flags != 0)
+            {
+                if ((flags & INVALID_UO_DIRECTORY) != 0)
+                {
+                    Client.ShowErrorMessage("Make sure your settings.json file is correctly filled out, could not find the UO directory.");
+                }
+                else if ((flags & INVALID_UO_VERSION) != 0)
+                {
+                    Client.ShowErrorMessage(ResGeneral.YourUOClientVersionIsInvalid);
+                }
+            }
+            else
+            {
+                Log.Trace($"[boot-debug] step M: ForceDriver={Settings.GlobalSettings.ForceDriver}");
+                switch (Settings.GlobalSettings.ForceDriver)
+                {
+                    default:
+                    case 1: // OpenGL
+                        Environment.SetEnvironmentVariable("FNA3D_FORCE_DRIVER", "OpenGL");
+#if !BROWSER_WASM
+                        // v0.7.9: SDL.SDL_SetHint throws ArgumentNullException
+                        // ("bytes") under Mercury MT — the static SDL2 build
+                        // in mercury-statics rejects the P/Invoke marshalled
+                        // byte* parameters at boot time (CUO's Main.cs omits
+                        // this call entirely; the env var alone steers FNA3D).
+                        SDL.SDL_SetHint(SDL.SDL_HINT_RENDER_DRIVER, "opengl");
+#endif
+                        break;
+
+                    case 2: // Vulkan
+                        Environment.SetEnvironmentVariable("FNA3D_FORCE_DRIVER", "Vulkan");
+#if !BROWSER_WASM
+                        SDL.SDL_SetHint(SDL.SDL_HINT_RENDER_DRIVER, "vulkan");
+#endif
+                        break;
+
+                    case 3: // SDL/FNA auto-select
+                        break;
+                }
+                Log.Trace("[boot-debug] step N: pre-Client.Run");
+                try
+                {
+                    Client.Run(pluginHost);
+                }
+                catch (Exception runEx)
+                {
+                    Log.Error("[boot-debug] Client.Run INNER FULL STACK:");
+                    Log.Error(runEx.ToString());
+                    if (runEx.InnerException != null)
+                    {
+                        Log.Error("[boot-debug] Client.Run INNER INNER:");
+                        Log.Error(runEx.InnerException.ToString());
+                    }
+                    throw;
+                }
+                Log.Trace("[boot-debug] step O: post-Client.Run");
+            }
+
+            Log.Trace("Closing...");
+        }
+
+        private static void ReadSettingsFromArgs(string[] args)
+        {
+            for (int i = 0; i <= args.Length - 1; i++)
+            {
+                string cmd = args[i].ToLower();
+
+                // NOTE: Command-line option name should start with "-" character
+                if (cmd.Length == 0 || cmd[0] != '-')
+                {
+                    continue;
+                }
+
+                cmd = cmd.Remove(0, 1);
+                string value = string.Empty;
+
+                if (i < args.Length - 1)
+                {
+                    if (!string.IsNullOrWhiteSpace(args[i + 1]) && !args[i + 1].StartsWith("-"))
+                    {
+                        value = args[++i];
+                    }
+                }
+
+                Log.Trace($"ARG: {cmd}, VALUE: {value}");
+
+                switch (cmd)
+                {
+                    // Here we have it! Using `-settings` option we can now set the filepath that will be used
+                    // to load and save ClassicUO main settings instead of default `./settings.json`
+                    // NOTE: All individual settings like `username`, `password`, etc passed in command-line options
+                    // will override and overwrite those in the settings file because they have higher priority
+                    case "settings":
+                        Settings.CustomSettingsFilepath = value;
+
+                        break;
+
+                    case "highdpi":
+                        CUOEnviroment.IsHighDPI = true;
+
+                        break;
+
+                    case "username":
+                        Settings.GlobalSettings.Username = value;
+
+                        break;
+
+                    case "password":
+                        Settings.GlobalSettings.Password = Crypter.Encrypt(value);
+
+                        break;
+
+                    case "password_enc": // Non-standard setting, similar to `password` but for already encrypted password
+                        Settings.GlobalSettings.Password = value;
+
+                        break;
+
+                    case "ip":
+                        Settings.GlobalSettings.IP = value;
+
+                        break;
+
+                    case "port":
+                        Settings.GlobalSettings.Port = ushort.Parse(value);
+
+                        break;
+
+                    case "filesoverride":
+                    case "uofilesoverride":
+                        UOFilesOverrideMap.OverrideFile = value;
+
+                        break;
+
+                    case "ultimaonlinedirectory":
+                    case "uopath":
+                        Settings.GlobalSettings.UltimaOnlineDirectory = value;
+
+                        break;
+
+                    case "profilespath":
+                        Settings.GlobalSettings.ProfilesPath = value;
+
+                        break;
+
+                    case "clientversion":
+                        Settings.GlobalSettings.ClientVersion = value;
+
+                        break;
+
+                    case "lastcharactername":
+                    case "lastcharname":
+                        LastCharacterManager.OverrideLastCharacter(value);
+
+                        break;
+
+                    case "lastservernum":
+                        Settings.GlobalSettings.LastServerNum = ushort.Parse(value);
+
+                        break;
+
+                    case "last_server_name":
+                        Settings.GlobalSettings.LastServerName = value;
+                        break;
+
+                    case "fps":
+                        int v = int.Parse(value);
+
+                        if (v < Constants.MIN_FPS)
+                        {
+                            v = Constants.MIN_FPS;
+                        }
+                        else if (v > Constants.MAX_FPS)
+                        {
+                            v = Constants.MAX_FPS;
+                        }
+
+                        Settings.GlobalSettings.FPS = v;
+
+                        break;
+
+                    case "debug":
+                        CUOEnviroment.Debug = true;
+
+                        break;
+
+                    case "profiler":
+                        if(string.IsNullOrEmpty(value) || bool.TryParse(value, out bool profilerEnabled) && profilerEnabled)
+                        {
+                            Profiler.Enabled = true;
+                            Log.Info("Profiler enabled");
+                        }
+                        break;
+
+                    case "saveaccount":
+                        Settings.GlobalSettings.SaveAccount = bool.Parse(value);
+
+                        break;
+
+                    case "autologin":
+                        Settings.GlobalSettings.AutoLogin = bool.Parse(value);
+
+                        break;
+
+                    case "reconnect":
+                        Settings.GlobalSettings.Reconnect = bool.Parse(value);
+
+                        break;
+
+                    case "reconnect_time":
+
+                        if (!int.TryParse(value, out int reconnectTime) || reconnectTime < 1)
+                        {
+                            reconnectTime = 1;
+                        }
+
+                        Settings.GlobalSettings.ReconnectTime = reconnectTime;
+
+                        break;
+
+                    case "login_music":
+                    case "music":
+                        Settings.GlobalSettings.LoginMusic = bool.Parse(value);
+
+                        break;
+
+                    case "login_music_volume":
+                    case "music_volume":
+                        Settings.GlobalSettings.LoginMusicVolume = int.Parse(value);
+
+                        break;
+
+                    case "fixed_time_step":
+                        Settings.GlobalSettings.FixedTimeStep = bool.Parse(value);
+
+                        break;
+
+                    case "skiploginscreen":
+                        CUOEnviroment.SkipLoginScreen = true;
+
+                        break;
+
+                    case "skipserverselect":
+                        CUOEnviroment.SkipServerSelect = true;
+
+                        break;
+
+                    case "plugins":
+                        Settings.GlobalSettings.Plugins = string.IsNullOrEmpty(value) ? new string[0] : value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+                        break;
+
+                    case "use_verdata":
+                        Settings.GlobalSettings.UseVerdata = bool.Parse(value);
+
+                        break;
+
+                    case "maps_layouts":
+
+                        Settings.GlobalSettings.MapsLayouts = value;
+
+                        break;
+
+                    case "encryption":
+                        Settings.GlobalSettings.Encryption = byte.Parse(value);
+
+                        break;
+
+                    case "force_driver":
+                        if (byte.TryParse(value, out byte res))
+                        {
+                            switch (res)
+                            {
+                                case 1: // OpenGL
+                                    Settings.GlobalSettings.ForceDriver = 1;
+
+                                    break;
+
+                                case 2: // Vulkan
+                                    Settings.GlobalSettings.ForceDriver = 2;
+
+                                    break;
+
+                                case 3: // SDL/FNA auto-select
+                                    Settings.GlobalSettings.ForceDriver = 3;
+
+                                    break;
+
+                                default: // use default
+                                    Settings.GlobalSettings.ForceDriver = 0;
+
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            Settings.GlobalSettings.ForceDriver = 0;
+                        }
+
+                        break;
+
+                    case "packetlog":
+
+                        PacketLogger.Default.Enabled = true;
+                        PacketLogger.Default.CreateFile();
+
+                        if (!string.IsNullOrEmpty(value))
+                        {
+                            string[] vals = value.Split(',');
+
+                            foreach (string val in vals)
+                            {
+                                string hex = val.Trim().StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                                    ? val.Trim().Substring(2)
+                                    : val.Trim();
+
+                                if (byte.TryParse(hex, NumberStyles.HexNumber, null, out byte res2))
+                                    PacketLogger.Default.LogPacketID.Add(res2);
+                            }
+                        }
+
+                        break;
+
+                    case "language":
+
+                        switch (value?.ToUpperInvariant())
+                        {
+                            case "RUS": Settings.GlobalSettings.Language = "RUS"; break;
+                            case "FRA": Settings.GlobalSettings.Language = "FRA"; break;
+                            case "DEU": Settings.GlobalSettings.Language = "DEU"; break;
+                            case "ESP": Settings.GlobalSettings.Language = "ESP"; break;
+                            case "JPN": Settings.GlobalSettings.Language = "JPN"; break;
+                            case "KOR": Settings.GlobalSettings.Language = "KOR"; break;
+                            case "PTB": Settings.GlobalSettings.Language = "PTB"; break;
+                            case "ITA": Settings.GlobalSettings.Language = "ITA"; break;
+                            case "CHT": Settings.GlobalSettings.Language = "CHT"; break;
+                            default:
+
+                                Settings.GlobalSettings.Language = "ENU";
+                                break;
+
+                        }
+
+                        break;
+
+                    case "no_server_ping":
+
+                        CUOEnviroment.NoServerPing = true;
+
+                        break;
+
+                    case "zlib":
+                        ZLib.SetCommandLineOverride();
+
+                        break;
+                }
+            }
+        }
+
+        private static void CopyRequiredLibs()
+        {
+#if !BROWSER_WASM
+            string nativePath = Path.Combine(AppContext.BaseDirectory, GetPlatformFolder());
+            if(Directory.Exists(nativePath))
+                foreach (string file in Directory.GetFiles(nativePath))
+                {
+                    string path = Path.Combine(AppContext.BaseDirectory, Path.GetFileName(file));
+                    bool copy = !File.Exists(path);
+
+                    if (!copy) //If file exists, see if they are *most likely* the same file
+                    {
+                        FileInfo existing = new(path);
+                        FileInfo newFile = new(file);
+
+                        if(existing.Length != newFile.Length)
+                            copy = true;
+                    }
+
+                    if (copy)
+                    {
+                        try
+                        {
+                            File.Copy(file, path, overwrite: true);
+                        }
+                        catch { }
+                    }
+                }
+#else
+            // v0.7.9: on WASM there is no native libs directory to copy from
+            // (no AppContext.BaseDirectory in the desktop sense), and
+            // RuntimeInformation.IsOSPlatform() throws PlatformNotSupportedException
+            // inside Mercury MT. Skipping entirely is correct — the WASM
+            // build links FNA/SDL2/FAudio statically via mercury-statics.
+#endif
+        }
+
+        private static string GetPlatformFolder()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                return "x64";
+                // return RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "win-arm" : "x64";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                return "lib64";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                return RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "osx-arm" : "osx";
+
+            throw new PlatformNotSupportedException();
+        }
+
+    }
+}

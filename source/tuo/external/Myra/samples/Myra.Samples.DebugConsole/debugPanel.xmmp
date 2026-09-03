@@ -1,0 +1,25 @@
+<Project>
+  <Project.ExportOptions Namespace="Myra.Samples.DebugConsole" Class="DebugPanel" OutputPath="D:\Projects\Myra\samples\Myra.Samples.DebugConsole" />
+  <VerticalStackPanel Spacing="8" Height="300">
+    <HorizontalMenu>
+      <MenuItem Text="&amp;Units">
+        <MenuItem Text="Add &amp;Orc" />
+        <MenuItem Text="Add &amp;Peasant" />
+        <MenuItem Text="Add &amp;Knight" />
+        <MenuItem Text="Add &amp;Priest" />
+        <MenuItem Text="Add &amp;Wizard" />
+      </MenuItem>
+      <MenuItem Text="&amp;Operations">
+        <MenuItem Text="Add 10000 &amp;Gold" />
+        <MenuItem Text="Add 10000 &amp;Wood" />
+      </MenuItem>
+    </HorizontalMenu>
+    <HorizontalStackPanel Spacing="8">
+      <Label Text="Command:" />
+      <TextBox StackPanel.ProportionType="Fill" />
+    </HorizontalStackPanel>
+    <Button HorizontalAlignment="Center" Id="_buttonHideDebug">
+      <Label Text="Hide Debug Panel" />
+    </Button>
+  </VerticalStackPanel>
+</Project>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(AppTargetFramework)</TargetFramework>
+    <AssemblyName>MyraPad</AssemblyName>
+    <RootNamespace>MyraPad</RootNamespace>
+    <OutputPath>bin\FNA.Core\$(Configuration)</OutputPath>
+    <DefineConstants>$(DefineConstants);FNA;CORE</DefineConstants>	
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\*.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Myra\Myra.FNA.Core.csproj" />
+    <PackageReference Include="System.CodeDom" Version="6.0.0" />
+  </ItemGroup>
+</Project>

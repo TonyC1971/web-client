@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>$(StrideTargetFramework)</TargetFramework>
+    <PackageId>XNAssets.Stride</PackageId>
+    <AssemblyName>XNAssets.Stride</AssemblyName>
+    <DefineConstants>$(DefineConstants);STRIDE</DefineConstants>
+    <OutputPath>bin\Stride\$(Configuration)</OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>	
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AssetManagementBase" Version="$(AssetManagementBaseVersion)" />
+    <PackageReference Include="StbImageSharp" Version="$(StbImageSharpVersion)" />
+    <PackageReference Include="Cyotek.Drawing.BitmapFont" Version="$(CyotekDrawingBitmapFontVersion)" />
+    <PackageReference Include="Stride.Graphics" Version="$(StrideVersion)" />
+  </ItemGroup>
+</Project>

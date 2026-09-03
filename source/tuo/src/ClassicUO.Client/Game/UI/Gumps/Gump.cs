@@ -1,0 +1,338 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Xml;
+using ClassicUO.Configuration;
+using ClassicUO.Game.GameObjects;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.Managers.Hotkeys;
+using ClassicUO.Game.UI.Controls;
+using ClassicUO.Input;
+using ClassicUO.Renderer;
+using Microsoft.Xna.Framework;
+
+namespace ClassicUO.Game.UI.Gumps
+{
+    public class Gump : Control
+    {
+        private bool isLocked = false;
+
+        public Gump(World world, uint local, uint server)
+        {
+            World = world;
+            LocalSerial = local;
+            ServerSerial = server;
+            AcceptMouseInput = false;
+            AcceptKeyboardInput = false;
+        }
+
+        public string PacketGumpText { get; set; } = string.Empty;
+
+        public World World { get; }
+
+        public virtual bool ShouldBeSaved => true;
+
+        public bool CanBeSaved => ShouldBeSaved && (GumpType != Gumps.GumpType.None || ServerSerial != 0);
+
+        public virtual GumpType GumpType { get; }
+
+        public bool InvalidateContents { get; set; }
+
+        public uint MasterGumpSerial { get; set; }
+
+        public float AlphaOffset = 0;
+
+        public override void OnMouseWheel(MouseEventType delta)
+        {
+            base.OnMouseWheel(delta);
+
+            if (HotKeys.IsPressed(HotKeyRegistrar.GumpOpacityId) && ProfileManager.CurrentProfile.EnableAlphaScrollingOnGumps)
+            {
+                if (delta == MouseEventType.WheelScrollUp && Alpha < 0.99)
+                {
+                    AlphaOffset += 0.02f;
+                    Alpha += 0.02f;
+                    foreach (Control c in Children)
+                    {
+                        c.Alpha += 0.02f;
+                        if (c.Alpha > 1) c.Alpha = 1;
+                    }
+                }
+                else if (Alpha > 0.1)
+                {
+                    AlphaOffset -= 0.02f;
+                    Alpha -= 0.02f;
+                    foreach (Control c in Children)
+                        c.Alpha -= 0.02f;
+                }
+            }
+        }
+
+        public virtual bool IsLocked
+        {
+            get { return isLocked; }
+            set
+            {
+                isLocked = value;
+                if (isLocked)
+                {
+                    CanMove = false;
+                    CanCloseWithRightClick = false;
+                }
+                else
+                {
+                    CanMove = true;
+                    CanCloseWithRightClick = true;
+                }
+                OnLockedChanged();
+            }
+        }
+
+        public bool CanBeLocked { get; set; } = true;
+
+        public override void Update()
+        {
+            if (InvalidateContents)
+            {
+                UpdateContents();
+                InvalidateContents = false;
+            }
+
+            if (ActivePage == 0)
+            {
+                ActivePage = 1;
+            }
+
+            base.Update();
+        }
+
+        public override void Dispose()
+        {
+            if (IsDisposed)
+                return;
+
+            Item it = World.Items.Get(LocalSerial);
+
+            if (it != null && it.Opened)
+                it.Opened = false;
+
+            base.Dispose();
+        }
+
+        public override void OnMouseUp(int x, int y, MouseButtonType button)
+        {
+            base.OnMouseUp(x, y, button);
+            if (CanBeLocked && (HotKeys.IsPressed(HotKeyRegistrar.GumpLockId) || Controller.Button_LeftTrigger) && UIManager.MouseOverControl != null && (UIManager.MouseOverControl == this || UIManager.MouseOverControl.RootParent == this))
+            {
+                IsLocked ^= true;
+            }
+        }
+
+        public virtual void Save(XmlTextWriter writer)
+        {
+            writer.WriteAttributeString("type", ((int)GumpType).ToString());
+            writer.WriteAttributeString("x", X.ToString());
+            writer.WriteAttributeString("y", Y.ToString());
+            writer.WriteAttributeString("serial", LocalSerial.ToString());
+            writer.WriteAttributeString("serverSerial", ServerSerial.ToString());
+            writer.WriteAttributeString("isLocked", isLocked.ToString());
+            writer.WriteAttributeString("alphaOffset", AlphaOffset.ToString());
+        }
+
+        public void CenterXInScreen()
+        {
+            // Width is already in logical UI space, so only the window bounds need converting.
+            // (The previous form multiplied Width by RenderScale, double-counting it and
+            // mis-centering whenever the game scale was not 1.0.)
+            X = (ScaleHelper.LogicalWindowWidth - Width) / 2;
+        }
+
+        public void CenterYInScreen()
+        {
+            // Height is already in logical UI space; see CenterXInScreen for the double-count fix.
+            Y = (ScaleHelper.LogicalWindowHeight - Height) / 2;
+        }
+
+        public void CenterXInViewPort()
+        {
+            Camera camera = Client.Game.Scene.Camera;
+            X = camera.Bounds.X + ((camera.Bounds.Width - Width) / 2);
+        }
+
+        public void CenterYInViewPort()
+        {
+            Camera camera = Client.Game.Scene.Camera;
+            Y = camera.Bounds.Y + ((camera.Bounds.Height - Height) / 2);
+        }
+
+        public Gump CenterInViewPort()
+        {
+            CenterXInViewPort();
+            CenterYInViewPort();
+            return this;
+        }
+
+        public void SetInScreen()
+        {
+            Rectangle windowBounds = Client.Game.Window.ClientBounds;
+
+            // Web fork (operator 2026-07-23): keep the WHOLE gump on-screen whenever it
+            // fits the window. Upstream clamps to half-off (-halfWidth .. Width-halfWidth),
+            // which on a small/laptop viewport — or with the world scaled to 50 % — lets
+            // auto-opened gumps (containers, paperdoll, status, options…) hang off the
+            // right/bottom edge with their end cut off. If the gump is genuinely LARGER
+            // than the window we fall back to keeping the top-left corner visible (the
+            // header/controls that matter), rather than centring it half-off. Dragging
+            // still routes through OnDragEnd's own looser clamp, so tucking a gump against
+            // an edge on a big screen is unchanged when it fits. See WEB_FORK_ADAPTATIONS.md.
+            if (Width <= windowBounds.Width && Height <= windowBounds.Height)
+            {
+                int maxX = System.Math.Max(0, windowBounds.Width - Width);
+                int maxY = System.Math.Max(0, windowBounds.Height - Height);
+                X = (int)MathHelper.Clamp(X, 0, maxX);
+                Y = (int)MathHelper.Clamp(Y, 0, maxY);
+                return;
+            }
+
+            int halfWidth = Width / 2;
+            int halfHeight = Height / 2;
+
+            // Oversized gump: pin the top-left corner on-screen so nothing important is
+            // lost past the top/left edges; the overflow spills off the right/bottom.
+            int newX = (int)MathHelper.Clamp(X, windowBounds.Width - Width, 0);
+            int newY = (int)MathHelper.Clamp(Y, windowBounds.Height - Height, 0);
+
+            X = newX;
+            Y = newY;
+        }
+
+        public virtual void Restore(XmlElement xml)
+        {
+            if (bool.TryParse(xml.GetAttribute("isLocked"), out bool lockedStatus))
+                IsLocked = lockedStatus;
+            if (float.TryParse(xml.GetAttribute("alphaOffset"), out float alpha))
+            {
+                AlphaOffset = alpha;
+                Alpha += alpha;
+                foreach (Control c in Children)
+                    c.Alpha += alpha;
+            }
+        }
+
+        public void RequestUpdateContents() => InvalidateContents = true;
+
+        protected virtual void UpdateContents()
+        {
+        }
+
+        protected override void OnDragEnd(int x, int y)
+        {
+            Point position = Location;
+            int halfWidth = Width - (Width >> 2);
+            int halfHeight = Height - (Height >> 2);
+
+            if (X < -halfWidth)
+            {
+                position.X = -halfWidth;
+            }
+
+            if (Y < -halfHeight)
+            {
+                position.Y = -halfHeight;
+            }
+
+            if (X > Client.Game.Window.ClientBounds.Width - (Width - halfWidth))
+            {
+                position.X = Client.Game.Window.ClientBounds.Width - (Width - halfWidth);
+            }
+
+            if (Y > Client.Game.Window.ClientBounds.Height - (Height - halfHeight))
+            {
+                position.Y = Client.Game.Window.ClientBounds.Height - (Height - halfHeight);
+            }
+
+            Location = position;
+        }
+
+        protected override void OnMove(int x, int y)
+        {
+            base.OnMove(x, y);
+
+            SetInScreen();
+        }
+
+        protected virtual void OnLockedChanged()
+        {
+        }
+
+        public override bool Draw(UltimaBatcher2D batcher, int x, int y) => IsVisible && base.Draw(batcher, x, y);
+
+        public override void OnButtonClick(int buttonID)
+        {
+            if (!IsDisposed && LocalSerial != 0)
+            {
+                var switches = new List<uint>();
+                var entries = new List<Tuple<ushort, string>>();
+
+                foreach (Control control in Children)
+                {
+                    switch (control)
+                    {
+                        case Checkbox checkbox when checkbox.IsChecked:
+                            switches.Add(control.LocalSerial);
+
+                            break;
+
+                        case StbTextBox textBox:
+                            entries.Add(new Tuple<ushort, string>((ushort)textBox.LocalSerial, textBox.Text));
+
+                            break;
+                    }
+                }
+
+                GameActions.ReplyGump
+                (
+                    World,
+                    LocalSerial,
+                    // Seems like MasterGump serial does not work as expected.
+                    /*MasterGumpSerial != 0 ? MasterGumpSerial :*/ ServerSerial,
+                    buttonID,
+                    switches.ToArray(),
+                    entries.ToArray()
+                );
+
+                if (CanMove)
+                {
+                    UIManager.SavePosition(ServerSerial, Location);
+                }
+                else
+                {
+                    UIManager.RemovePosition(ServerSerial);
+                }
+
+                Dispose();
+            }
+        }
+
+        public override void CloseWithRightClick()
+        {
+            if (!CanCloseWithRightClick)
+            {
+                return;
+            }
+
+            if (ServerSerial != 0)
+            {
+                OnButtonClick(0);
+            }
+
+            base.CloseWithRightClick();
+        }
+
+        public override void ChangePage(int pageIndex) =>
+            // For a gump, Page is the page that is drawing.
+            ActivePage = pageIndex;
+    }
+}

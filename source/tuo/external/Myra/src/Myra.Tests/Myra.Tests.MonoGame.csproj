@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);MONOGAME</DefineConstants>
+    <TargetFrameworks>$(AppTargetFramework)-windows</TargetFrameworks>
+    <OutputPath>bin\MonoGame\$(Configuration)</OutputPath>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Myra.Tests</RootNamespace>
+    <AssemblyName>Myra.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\**\*.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.WindowsDX" Version="$(MonoGameVersion)" />
+    <PackageReference Include="NUnit" Version="3.12.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="3.17.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.7.0" />
+  </ItemGroup>  
+
+  <ItemGroup>
+    <ProjectReference Include="..\Myra\Myra.MonoGame.csproj" />
+  </ItemGroup>  
+</Project>

@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using ClassicUO.Game.Scenes;
+using ClassicUO.Renderer;
+using ClassicUO.Utility;
+using Microsoft.Xna.Framework;
+using System.Collections.Generic;
+
+namespace ClassicUO.Game.UI.Controls
+{
+    internal class GumpPicTiled : Control
+    {
+        private ushort _graphic;
+
+        public GumpPicTiled(ushort graphic)
+        {
+            CanMove = true;
+            AcceptMouseInput = true;
+            Graphic = graphic;
+        }
+
+        public GumpPicTiled(int x, int y, int width, int heigth, ushort graphic) : this(graphic)
+        {
+            X = x;
+            Y = y;
+
+            if (width > 0)
+            {
+                Width = width;
+            }
+
+            if (heigth > 0)
+            {
+                Height = heigth;
+            }
+        }
+
+        public GumpPicTiled(List<string> parts) : this(UInt16Converter.Parse(parts[5]))
+        {
+            X = int.Parse(parts[1]);
+            Y = int.Parse(parts[2]);
+            Width = int.Parse(parts[3]);
+            Height = int.Parse(parts[4]);
+            IsFromServer = true;
+        }
+
+        public ushort Graphic
+        {
+            get => _graphic;
+            set
+            {
+                if (_graphic != value && value != 0xFFFF)
+                {
+                    _graphic = value;
+
+                    ref readonly var gumpInfo = ref Client.Game.UO.Gumps.GetGump(_graphic);
+
+                    if (gumpInfo.Texture == null)
+                    {
+#if BROWSER_WASM
+                        WasmTrace.W($"[cuo-trace] GumpPicTiled 0x{_graphic:X4} texture=null -> Dispose");
+#endif
+                        Dispose();
+
+                        return;
+                    }
+#if BROWSER_WASM
+                    WasmTrace.W($"[cuo-trace] GumpPicTiled 0x{_graphic:X4} UV={gumpInfo.UV.Width}x{gumpInfo.UV.Height}");
+#endif
+
+                    Width = gumpInfo.UV.Width;
+                    Height = gumpInfo.UV.Height;
+                }
+            }
+        }
+
+        public ushort Hue { get; set; }
+
+        public override bool AddToRenderLists(RenderLists renderLists, int x, int y, ref float layerDepthRef)
+        {
+            float layerDepth = layerDepthRef;
+            Vector3 hueVector = ShaderHueTranslator.GetHueVector(Hue, false, Alpha, true);
+
+            ref readonly var gumpInfo = ref Client.Game.UO.Gumps.GetGump(Graphic);
+
+            var texture = gumpInfo.Texture;
+            if (texture != null)
+            {
+                var sourceRectangle = gumpInfo.UV;
+                // browser-wasm: AddGumpWithAtlas silently drops small
+                // tiled UI sprites (paperdoll equipment-slot background
+                // GumpPicTiled 0x243A is a 19x20 tile that disappears
+                // this way — user reported the slot squares look
+                // transparent). Same trap as Checkbox / Button / GumpPic
+                // documented in CLAUDE.md + GRAPHICS_BUGS.md #O8. Route
+                // through the no-atlas path which draws each tile as a
+                // standalone texture bind.
+#if BROWSER_WASM
+                renderLists.AddGumpNoAtlas
+#else
+                renderLists.AddGumpWithAtlas
+#endif
+                (
+                    (batcher) =>
+                    {
+                        batcher.DrawTiled(
+                            texture,
+                            new Rectangle(x, y, Width, Height),
+                            sourceRectangle,
+                            hueVector,
+                            layerDepth
+                        );
+                        return true;
+                    }
+                );
+            }
+
+            return base.AddToRenderLists(renderLists, x, y, ref layerDepthRef);
+        }
+
+        public override bool Contains(int x, int y)
+        {
+            int width = Width;
+            int height = Height;
+
+            x -= Offset.X;
+            y -= Offset.Y;
+
+            ref readonly var gumpInfo = ref Client.Game.UO.Gumps.GetGump(Graphic);
+
+            if (gumpInfo.Texture == null)
+            {
+                return false;
+            }
+
+            if (width == 0)
+            {
+                width = gumpInfo.UV.Width;
+            }
+
+            if (height == 0)
+            {
+                height = gumpInfo.UV.Height;
+            }
+
+            while (x > gumpInfo.UV.Width && width > gumpInfo.UV.Width)
+            {
+                x -= gumpInfo.UV.Width;
+                width -= gumpInfo.UV.Width;
+            }
+
+            while (y > gumpInfo.UV.Height && height > gumpInfo.UV.Height)
+            {
+                y -= gumpInfo.UV.Height;
+                height -= gumpInfo.UV.Height;
+            }
+
+            if (x > width || y > height)
+            {
+                return false;
+            }
+
+            return Client.Game.UO.Gumps.PixelCheck(Graphic, x, y);
+        }
+    }
+}

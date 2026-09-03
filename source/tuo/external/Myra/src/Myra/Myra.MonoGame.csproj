@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);MONOGAME</DefineConstants>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>Myra</AssemblyName>
+    <PackageId>Myra</PackageId>
+    <OutputPath>bin\MonoGame\$(Configuration)</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\**\*.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Platform\**\*.*" />
+    <Compile Update="Graphics2D\UI\File\FileDialog.PlatformDependent.cs">
+      <DependentUpon>FileDialog.cs</DependentUpon>
+    </Compile>
+    <Compile Update="Graphics2D\UI\File\FileDialog.Util.cs">
+      <DependentUpon>FileDialog.cs</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="XNAssets.MonoGame" Version="$(XNAssetsVersion)" />
+    <PackageReference Include="XNAssets.FontStashSharp.MonoGame" Version="$(XNAssetsVersion)" />
+    <PackageReference Include="info.lundin.math.dll" Version="$(InfoLundinMathVersion)" />
+    <PackageReference Include="MonoGame.Framework.DesktopGL" PrivateAssets="All" Version="$(MonoGameVersion)" />
+  </ItemGroup>
+</Project>

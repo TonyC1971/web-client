@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- v0.7.9: propagate BROWSER_WASM so the Logger's WASM-only branch
+       (Console.ForegroundColor throws PlatformNotSupportedException in
+       Mercury MT) gates correctly. Mirrors source/cuo/src/ClassicUO.Utility/. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>

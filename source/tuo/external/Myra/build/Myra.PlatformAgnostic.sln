@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.1.32328.378
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Samples", "Samples", "{EAB0AA24-7185-4897-A866-AE87AF3F2E0B}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Myra.PlatformAgnostic", "..\src\Myra\Myra.PlatformAgnostic.csproj", "{09296F2D-2AB0-4B9C-B6EF-73389BABBDC8}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Myra.Samples.PlatformAgnostic", "..\samples\Myra.Samples.PlatformAgnostic\Myra.Samples.PlatformAgnostic.csproj", "{0D553344-A5D2-42F6-947B-30139A27A9F4}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Myra.Samples.Silk.NET", "..\samples\Myra.Samples.Silk.NET\Myra.Samples.Silk.NET.csproj", "{B661A371-75A8-43AD-B285-DCD0FD7EC93B}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Myra.Samples.Silk.NET.TrippyGL", "..\samples\Myra.Samples.Silk.NET.TrippyGL\Myra.Samples.Silk.NET.TrippyGL.csproj", "{28D35517-E469-4A95-904B-AF225A54774C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{09296F2D-2AB0-4B9C-B6EF-73389BABBDC8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{09296F2D-2AB0-4B9C-B6EF-73389BABBDC8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{09296F2D-2AB0-4B9C-B6EF-73389BABBDC8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{09296F2D-2AB0-4B9C-B6EF-73389BABBDC8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0D553344-A5D2-42F6-947B-30139A27A9F4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0D553344-A5D2-42F6-947B-30139A27A9F4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0D553344-A5D2-42F6-947B-30139A27A9F4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0D553344-A5D2-42F6-947B-30139A27A9F4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B661A371-75A8-43AD-B285-DCD0FD7EC93B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B661A371-75A8-43AD-B285-DCD0FD7EC93B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B661A371-75A8-43AD-B285-DCD0FD7EC93B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B661A371-75A8-43AD-B285-DCD0FD7EC93B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{28D35517-E469-4A95-904B-AF225A54774C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{28D35517-E469-4A95-904B-AF225A54774C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{28D35517-E469-4A95-904B-AF225A54774C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{28D35517-E469-4A95-904B-AF225A54774C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0D553344-A5D2-42F6-947B-30139A27A9F4} = {EAB0AA24-7185-4897-A866-AE87AF3F2E0B}
+		{B661A371-75A8-43AD-B285-DCD0FD7EC93B} = {EAB0AA24-7185-4897-A866-AE87AF3F2E0B}
+		{28D35517-E469-4A95-904B-AF225A54774C} = {EAB0AA24-7185-4897-A866-AE87AF3F2E0B}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {35ACDF4E-2CE2-46B1-A19F-35DC131069A1}
+	EndGlobalSection
+EndGlobal

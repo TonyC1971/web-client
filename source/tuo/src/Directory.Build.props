@@ -1,0 +1,32 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>Preview</LangVersion>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Company>ClassicUO</Company>
+    <Authors>KaRaShO'</Authors>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Copyright>ClassicUO</Copyright>
+    <PackageProjectUrl>https://www.classicuo.eu/</PackageProjectUrl>
+    <Description>An open source implementation of the Ultima Online Classic Client.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IS_DEV_BUILD)' == 'true'">
+    <DefineConstants>$(DefineConstants);DEV_BUILD</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\external\FileEmbed\FileEmbed\FileEmbed.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

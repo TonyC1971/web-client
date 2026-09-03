@@ -1,0 +1,1025 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using ClassicUO.Configuration;
+using ClassicUO.Game.Data;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.UI.Gumps;
+using ClassicUO.Network;
+using ClassicUO.Utility;
+using ClassicUO.Utility.Logging;
+using ClassicUO.Assets;
+using ClassicUO.Game.UI;
+
+namespace ClassicUO.Game.GameObjects
+{
+    public class PlayerMobile : Mobile
+    {
+        private readonly Dictionary<BuffIconType, BuffIcon> _buffIcons = new Dictionary<BuffIconType, BuffIcon>();
+
+        public PlayerMobile(World world, uint serial) : base(world, serial)
+        {
+            Skills = new Skill[Client.Game.UO.FileManager.Skills.SkillsCount];
+
+            for (int i = 0; i < Skills.Length; i++)
+            {
+                SkillEntry skill = Client.Game.UO.FileManager.Skills.Skills[i];
+                Skills[i] = new Skill(skill.Name, skill.Index, skill.HasAction);
+            }
+
+            Walker = new WalkerManager(this);
+            Pathfinder = new Pathfinder(world);
+
+            EventSink.SkillValueChangedEvent += (s, e) =>
+            {
+                if (ProfileManager.CurrentProfile.DisplaySkillBarOnChange)
+                {
+                    SkillProgressBar.QueManager.AddSkill(world, e.Index);
+                }
+            };
+
+            IsPlayer = true;
+        }
+
+        public new bool IsVisible { get; set; } = true;
+
+        public Skill[] Skills { get; }
+        public override bool InWarMode { get; set; }
+        public IReadOnlyDictionary<BuffIconType, BuffIcon> BuffIcons => _buffIcons;
+
+        public ref Ability PrimaryAbility => ref Abilities[0];
+        public ref Ability SecondaryAbility => ref Abilities[1];
+        public override bool IsWalking => LastStepTime > Time.Ticks - Constants.PLAYER_WALKING_DELAY;
+
+        public uint LastGumpID { get; set; }
+
+        internal WalkerManager Walker { get; }
+        public Pathfinder Pathfinder { get; }
+
+
+        public readonly Ability[] Abilities = [Ability.Invalid, Ability.Invalid];
+
+        //private bool _lastRun, _lastMount;
+        //private int _lastDir = -1, _lastDelta, _lastStepTime;
+
+
+        public readonly HashSet<uint> AutoOpenedCorpses = new HashSet<uint>();
+        public readonly HashSet<uint> ManualOpenedCorpses = new HashSet<uint>();
+
+        public short ColdResistance;
+        public short DamageIncrease;
+        public short DamageMax;
+        public short DamageMin;
+        public long DeathScreenTimer;
+        public short DefenseChanceIncrease;
+        public Lock DexLock;
+        public ushort Dexterity;
+        public short DexterityIncrease;
+        public short EnergyResistance;
+        public short EnhancePotions;
+        public short FasterCasting;
+        public short FasterCastRecovery;
+        public short FireResistance;
+        public byte Followers;
+        public byte FollowersMax;
+        public uint Gold;
+        public short HitChanceIncrease;
+        public short HitPointsIncrease;
+        public short HitPointsRegeneration;
+        public ushort Intelligence;
+        public short IntelligenceIncrease;
+        public Lock IntLock;
+        public short LowerManaCost;
+        public short LowerReagentCost;
+        public ushort Luck;
+        public short ManaIncrease;
+        public short ManaRegeneration;
+        public short MaxColdResistence;
+        public short MaxDefenseChanceIncrease;
+        public short MaxEnergyResistence;
+        public short MaxFireResistence;
+        public short MaxHitPointsIncrease;
+        public short MaxManaIncrease;
+        public short MaxPhysicResistence;
+        public short MaxPoisonResistence;
+        public short MaxStaminaIncrease;
+        public short PhysicalResistance;
+        public short PoisonResistance;
+        public short ReflectPhysicalDamage;
+        public short SpellDamageIncrease;
+        public short StaminaIncrease;
+        public short StaminaRegeneration;
+        public short StatsCap;
+        public ushort Strength;
+        public short StrengthIncrease;
+        public Lock StrLock;
+        public short SwingSpeedIncrease;
+        public uint TithingPoints;
+        public ushort Weight;
+        public ushort WeightMax;
+        /// <summary>
+        /// True while a spell is being cast.
+        /// </summary>
+        public bool IsCasting { get; set; }
+
+        /// <summary>
+        /// True while a spell is in recovery phase.
+        /// </summary>
+        public bool IsRecovering => IsCasting; //May incorporate this again later, for now just reference is casting
+
+        public Item FindBandage(ushort graphic = 0x0E21)
+        {
+            Item backpack = Backpack;
+            Item item = null;
+
+            if (backpack != null)
+            {
+                item = backpack.FindItem(graphic);
+            }
+
+            if (item == null)
+                item = FindItemByLayer(Layer.Waist)?.FindItem(graphic);
+
+            return item;
+        }
+
+        public Item FindItemByGraphic(ushort graphic)
+        {
+            Item backpack = Backpack;
+
+            if (backpack != null)
+            {
+                return FindItemInContainerRecursive(backpack, graphic);
+            }
+
+            return null;
+        }
+
+        public Item FindItemByCliloc(int cliloc)
+        {
+            Item backpack = Backpack;
+
+            if (backpack != null)
+            {
+                return FindItemByClilocInContainerRecursive(backpack, cliloc);
+            }
+
+            return null;
+        }
+
+        public Item FindItemByGraphicAndHue(ushort graphic, ushort? hue)
+        {
+            Item backpack = Backpack;
+
+            if (backpack != null)
+            {
+                return FindItemByGraphicAndHueInContainerRecursive(backpack, graphic, hue);
+            }
+
+            return null;
+        }
+
+        private Item FindItemInContainerRecursive(Item container, ushort graphic)
+        {
+            Item found = null;
+
+            if (container != null)
+            {
+                for (LinkedObject i = container.Items; i != null; i = i.Next)
+                {
+                    var item = (Item)i;
+
+                    if (item.Graphic == graphic)
+                    {
+                        return item;
+                    }
+
+                    if (!item.IsEmpty)
+                    {
+                        found = FindItemInContainerRecursive(item, graphic);
+
+                        if (found != null && found.Graphic == graphic)
+                        {
+                            return found;
+                        }
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        private Item FindItemByClilocInContainerRecursive(Item container, int cliloc)
+        {
+            Item found = null;
+
+            if (container != null)
+            {
+                for (LinkedObject i = container.Items; i != null; i = i.Next)
+                {
+                    var item = (Item)i;
+
+
+                    if (cliloc == World.OPL.GetNameCliloc(item.Serial))
+                    {
+                        return item;
+                    }
+
+                    if (!item.IsEmpty)
+                    {
+                        found = FindItemByClilocInContainerRecursive(item, cliloc);
+
+                        if (found != null && cliloc == World.OPL.GetNameCliloc(found.Serial))
+                        {
+                            return found;
+                        }
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        private Item FindItemByGraphicAndHueInContainerRecursive(Item container, ushort graphic, ushort? hue)
+        {
+            Item found = null;
+
+            if (container != null)
+            {
+                for (LinkedObject i = container.Items; i != null; i = i.Next)
+                {
+                    var item = (Item)i;
+
+                    bool graphicMatches = item.Graphic == graphic;
+                    bool hueMatches = !hue.HasValue || item.Hue == hue.Value;
+
+                    if (graphicMatches && hueMatches)
+                    {
+                        return item;
+                    }
+
+                    if (!item.IsEmpty)
+                    {
+                        found = FindItemByGraphicAndHueInContainerRecursive(item, graphic, hue);
+
+                        if (found != null)
+                        {
+                            return found;
+                        }
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        public Item FindPreferredItemByCliloc(System.Span<int> clilocs)
+        {
+            Item item = null;
+
+            for (int i = 0; i < clilocs.Length; i++)
+            {
+                item = World.Player.FindItemByCliloc(clilocs[i]);
+
+                if (item != null)
+                {
+                    break;
+                }
+            }
+
+            return item;
+        }
+
+        public void AddBuff(BuffIconType type, ushort graphic, uint time, string text, string title = "")
+        {
+            _buffIcons[type] = new BuffIcon(type, graphic, time, text, title);
+
+            if (ProfileManager.CurrentProfile.UseImprovedBuffBar)
+                UIManager.ForEach<ImprovedBuffGump>(g => g.AddBuff(new BuffIcon(type, graphic, time, text, title)));
+
+            EventSink.InvokeOnBuffAdded(null, new BuffEventArgs(_buffIcons[type]));
+        }
+
+        public bool IsBuffIconExists(BuffIconType graphic) => _buffIcons.ContainsKey(graphic);
+
+        public void RemoveBuff(BuffIconType graphic)
+        {
+            if (_buffIcons.TryGetValue(graphic, out BuffIcon ev))
+            {
+                EventSink.InvokeOnBuffRemoved(null, new BuffEventArgs(ev));
+                _buffIcons.Remove(graphic);
+            }
+
+            if (ProfileManager.CurrentProfile.UseImprovedBuffBar)
+                UIManager.ForEach<ImprovedBuffGump>(g => g.RemoveBuff(graphic));
+        }
+
+        public void UpdateAbilities()
+        {
+            AbilityData.DefaultItemAbilities.Set(Abilities);
+
+            if ((FindItemByLayer(Layer.OneHanded) ?? FindItemByLayer(Layer.TwoHanded)) is { OriginalGraphic: > 0 } weapon)
+            {
+                ushort animId = weapon.ItemData.AnimID;
+                ushort animGraphic = 0;
+
+                if (Client.Game.UO.FileManager.TileData.StaticData[weapon.OriginalGraphic - 1].AnimID == animId)
+                {
+                    animGraphic = (ushort)(weapon.OriginalGraphic - 1);
+                }
+                else if (Client.Game.UO.FileManager.TileData.StaticData[weapon.OriginalGraphic + 1].AnimID == animId)
+                {
+                    animGraphic = (ushort)(weapon.OriginalGraphic + 1);
+                }
+
+                if (AbilityData.GraphicToAbilitiesMap.TryGetValue(weapon.OriginalGraphic, out ItemAbilities abilities) || AbilityData.GraphicToAbilitiesMap.TryGetValue(animGraphic, out abilities))
+                {
+                    abilities.Set(Abilities);
+                }
+                else
+                {
+                    Log.Warn($"Could not update abilities ${weapon.OriginalGraphic} \"${weapon.Name}\" has no GraphicToAbilitiesMap[OriginalGraphic] data");
+                }
+            }
+
+            UIManager.ForEach<CombatBookGump>(g => g.RequestUpdateContents());
+            UIManager.ForEach<UseAbilityButtonGump>(g => g.RequestUpdateContents());
+        }
+
+        protected override void OnPositionChanged()
+        {
+            base.OnPositionChanged();
+
+            Plugin.UpdatePlayerPosition(X, Y, Z);
+
+            // Record movement for script recording (only if position actually changed)
+            bool isRunning = Steps.Count > 0 && Steps.Back().Run;
+            Direction direction = Steps.Count > 0 ? (Direction)Steps.Back().Direction : Direction.North;
+            ClassicUO.LegionScripting.ScriptRecorder.Instance.UpdatePlayerPosition(X, Y, direction, isRunning);
+
+            TryOpenDoors();
+            TryOpenCorpses();
+
+            EventSink.InvokeOnPositionChanged(this, new PositionChangedArgs(new Microsoft.Xna.Framework.Vector3(X, Y, Z)));
+        }
+
+        public void TryOpenCorpses()
+        {
+            // Early return if both auto-open settings are disabled
+            if (!ProfileManager.CurrentProfile.AutoOpenCorpses && !ProfileManager.CurrentProfile.AutoOpenOwnCorpse) return;
+
+            // Use the optimized corpse collection instead of iterating all items
+            Item[] corpses = World.GetCorpseSnapshot();
+
+            foreach (Item item in corpses)
+            {
+                if (!item.IsDestroyed && item.Distance <= ProfileManager.CurrentProfile.AutoOpenCorpseRange && !AutoOpenedCorpses.Contains(item.Serial))
+                {
+                    // Check if this is the player's own corpse
+                    bool isOwnCorpse = !string.IsNullOrEmpty(item.Name) &&
+                                       !string.IsNullOrEmpty(Name) &&
+                                       item.Name.Equals($"the remains of {Name}", System.StringComparison.OrdinalIgnoreCase);
+
+                    // Open if it's own corpse and AutoOpenOwnCorpse is enabled, or if AutoOpenCorpses is enabled
+                    bool shouldOpen = (isOwnCorpse && ProfileManager.CurrentProfile.AutoOpenOwnCorpse) ||
+                                      ProfileManager.CurrentProfile.AutoOpenCorpses;
+
+                    if (shouldOpen)
+                    {
+                        // Check targeting and hidden restrictions only for auto open corpses (not own corpse)
+                        if (!isOwnCorpse || !ProfileManager.CurrentProfile.AutoOpenOwnCorpse)
+                        {
+                            if ((ProfileManager.CurrentProfile.CorpseOpenOptions == 1 || ProfileManager.CurrentProfile.CorpseOpenOptions == 3) && World.TargetManager.IsTargeting)
+                            {
+                                continue;
+                            }
+
+                            if ((ProfileManager.CurrentProfile.CorpseOpenOptions == 2 || ProfileManager.CurrentProfile.CorpseOpenOptions == 3) && IsHidden)
+                            {
+                                continue;
+                            }
+                        }
+
+                        AutoOpenedCorpses.Add(item.Serial);
+                        GameActions.QueueOpenCorpse(item.Serial);
+                    }
+                }
+            }
+        }
+
+        protected override void OnDirectionChanged()
+        {
+            base.OnDirectionChanged();
+            TryOpenDoors();
+        }
+
+        private void TryOpenDoors()
+        {
+            if (!World.Player.IsDead && ProfileManager.CurrentProfile.AutoOpenDoors
+                && (ProfileManager.CurrentProfile.AutoOpenDoorsIfHidden || !IsHidden))
+            {
+                int x = X, y = Y, z = Z;
+                Pathfinder.GetNewXY((byte)Direction, ref x, ref y);
+
+                // Send_OpenDoor toggles the door server-side, so skip already-open doors to
+                // avoid closing one the player (or a script) deliberately left open.
+                if (World.Items.Values.Any(s => s.ItemData.IsDoor && s.X == x && s.Y == y && s.Z - 15 <= z && s.Z + 15 >= z
+                    && !DoorData.IsOpenDoor(s.Graphic)))
+                {
+                    GameActions.OpenDoor();
+                }
+            }
+        }
+
+        public override void Destroy()
+        {
+            if (IsDestroyed)
+            {
+                return;
+            }
+
+            DeathScreenTimer = 0;
+
+            Log.Warn("PlayerMobile disposed!");
+            base.Destroy();
+        }
+
+        public void CloseBank()
+        {
+            Item bank = FindItemByLayer(Layer.Bank);
+
+            if (bank != null && bank.Opened)
+            {
+                if (!bank.IsEmpty)
+                {
+                    var first = (Item)bank.Items;
+
+                    while (first != null)
+                    {
+                        var next = (Item)first.Next;
+
+                        World.RemoveItem(first, true);
+
+                        first = next;
+                    }
+
+                    bank.Items = null;
+                }
+
+                UIManager.ForEach<ContainerGump>(g=> g.Dispose(), bank.Serial);
+                UIManager.ForEach<GridContainer>(g=> g.Dispose(), bank.Serial);
+
+                bank.Opened = false;
+            }
+        }
+
+        public void CloseRangedGumps()
+        {
+            for (int i = 0; i < UIManager.Gumps.Count; i++)
+            {
+                if (UIManager.Gumps.Count > i)
+                    continue;
+
+                IGui gump = UIManager.Gumps.ElementAt(i);
+                //}
+                //foreach (Gump gump in UIManager.Gumps)
+                //{
+                switch (gump)
+                {
+                    case ModernPaperdoll _:
+                    case PaperDollGump _:
+                    case MapGump _:
+                    case SpellbookGump _:
+
+                        if (World.Get(gump.LocalSerial) == null)
+                        {
+                            gump.Dispose();
+                        }
+
+                        break;
+
+                    case TradingGump _:
+                    case ShopGump _:
+
+                        Entity ent = World.Get(gump.LocalSerial);
+                        int distance = int.MaxValue;
+
+                        if (ent != null)
+                        {
+                            if (SerialHelper.IsItem(ent.Serial))
+                            {
+                                Entity top = World.Get(((Item)ent).RootContainer);
+
+                                if (top != null)
+                                {
+                                    distance = top.Distance;
+                                }
+                            }
+                            else
+                            {
+                                distance = ent.Distance;
+                            }
+                        }
+
+                        if (distance > Constants.MIN_VIEW_RANGE)
+                        {
+                            gump.Dispose();
+                        }
+
+                        break;
+
+                    case ContainerGump _:
+                        distance = int.MaxValue;
+
+                        ent = World.Get(gump.LocalSerial);
+
+                        if (ent != null)
+                        {
+                            if (SerialHelper.IsItem(ent.Serial))
+                            {
+                                Entity top = World.Get(((Item)ent).RootContainer);
+
+                                if (top != null)
+                                {
+                                    distance = top.Distance;
+                                }
+                            }
+                            else
+                            {
+                                distance = ent.Distance;
+                            }
+                        }
+
+                        if (distance > Constants.MAX_CONTAINER_OPENED_ON_GROUND_RANGE)
+                        {
+                            gump.Dispose();
+                        }
+
+                        break;
+                    #region GridContainer
+                    case GridContainer _:
+                        distance = int.MaxValue;
+
+                        ent = World.Get(gump.LocalSerial);
+
+                        if (ent != null)
+                        {
+                            if (SerialHelper.IsItem(ent.Serial))
+                            {
+                                Entity top = World.Get(((Item)ent).RootContainer);
+
+                                if (top != null)
+                                {
+                                    distance = top.Distance;
+                                }
+                            }
+                            else
+                            {
+                                distance = ent.Distance;
+                            }
+                        }
+
+                        if (distance > Constants.MAX_CONTAINER_OPENED_ON_GROUND_RANGE)
+                        {
+                            gump.Dispose();
+                        }
+
+                        break;
+                        #endregion
+                }
+            }
+        }
+
+
+        //public override void Update()
+        //{
+        //    base.Update();
+
+        //    //const int TIME_TURN_TO_LASTTARGET = 2000;
+
+        //    //if (TargetManager.LastAttack != 0 &&
+        //    //    InWarMode &&
+        //    //    Walker.LastStepRequestTime + TIME_TURN_TO_LASTTARGET < Time.Ticks)
+        //    //{
+        //    //    Mobile enemy = World.Mobiles.Get(TargetManager.LastAttack);
+
+        //    //    if (enemy != null && enemy.Distance <= 1)
+        //    //    {
+        //    //        Direction pdir = DirectionHelper.GetDirectionAB(World.Player.X,
+        //    //                                                        World.Player.Y,
+        //    //                                                        enemy.X,
+        //    //                                                        enemy.Y);
+
+        //    //        if (Direction != pdir)
+        //    //            Walk(pdir, false);
+        //    //    }
+        //    //}
+        //}
+
+        // ############# DO NOT DELETE IT! #############
+        //protected override bool NoIterateAnimIndex()
+        //{
+        //    return false;
+        //}
+        // #############################################
+
+        public bool Walk(Direction direction, bool run)
+        {
+            if (!ProfileManager.CurrentProfile.AutoAvoidObstacules
+                || Pathfinder.AutoWalking)
+            {
+                return WalkNotAvoid(direction, run);
+            }
+            else
+            {
+                if (Walker.WalkingFailed || Walker.LastStepRequestTime > Time.Ticks || Walker.StepsCount >= Constants.MAX_STEP_COUNT || Client.Game.UO.Version >= ClientVersion.CV_60142 && IsParalyzed || SpeedMode == CharacterSpeedType.CantWalkOrRun)
+                {
+                    return false;
+                }
+
+                run |= ProfileManager.CurrentProfile.AlwaysRun;
+
+                if (SpeedMode >= CharacterSpeedType.CantRun || Stamina <= 1 && !IsDead || IsHidden && ProfileManager.CurrentProfile.AlwaysRunUnlessHidden)
+                {
+                    run = false;
+                }
+
+                int x = X;
+                int y = Y;
+                sbyte z = Z;
+                Direction oldDirection = Direction;
+
+                bool emptyStack = Steps.Count == 0;
+
+                if (!emptyStack)
+                {
+                    ref Step walkStep = ref Steps.Back();
+                    x = walkStep.X;
+                    y = walkStep.Y;
+                    z = walkStep.Z;
+                    oldDirection = (Direction)walkStep.Direction;
+                }
+
+                sbyte oldZ = z;
+                ushort walkTime = ProfileManager.CurrentProfile.TurnDelay;
+
+
+                if (IsCardinalDirection(direction))
+                {
+                    if (IsObstacle(direction, x, y, z))
+                    {
+                        Direction newDir = TryToAvoid(direction, x, y, z);
+
+                        if (!IsObstacle(newDir, x, y, z))
+                        {
+                            direction = newDir;
+                            World.Player.ClearSteps();
+
+                            World.Player.SetInWorldTile((ushort)x, (ushort)y, z);
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                if ((oldDirection & Direction.Mask) == (direction & Direction.Mask))
+                {
+
+
+                    Direction newDir = direction;
+                    int newX = x;
+                    int newY = y;
+                    sbyte newZ = z;
+
+                    if (!Pathfinder.CanWalk(ref newDir, ref newX, ref newY, ref newZ))
+                    {
+                        return false;
+                    }
+
+                    if ((direction & Direction.Mask) != newDir)
+                    {
+                        direction = newDir;
+                    }
+                    else
+                    {
+                        direction = newDir;
+                        x = newX;
+                        y = newY;
+                        z = newZ;
+
+                        walkTime = (ushort)MovementSpeed.TimeToCompleteMovement(run, IsMounted || SpeedMode == CharacterSpeedType.FastUnmount || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun || IsFlying);
+                    }
+                }
+                else
+                {
+                    Direction newDir = direction;
+                    int newX = x;
+                    int newY = y;
+                    sbyte newZ = z;
+
+                    if (!Pathfinder.CanWalk(ref newDir, ref newX, ref newY, ref newZ))
+                    {
+                        if ((oldDirection & Direction.Mask) == newDir)
+                        {
+                            return false;
+                        }
+                    }
+
+                    if ((oldDirection & Direction.Mask) == newDir)
+                    {
+                        x = newX;
+                        y = newY;
+                        z = newZ;
+
+                        walkTime = (ushort)MovementSpeed.TimeToCompleteMovement(run, IsMounted || SpeedMode == CharacterSpeedType.FastUnmount || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun || IsFlying);
+                    }
+
+                    direction = newDir;
+                }
+
+                CloseBank();
+
+                if (emptyStack)
+                {
+                    if (!IsWalking)
+                    {
+                        SetAnimation(0xFF);
+                    }
+
+                    LastStepTime = Time.Ticks;
+                }
+                if (Walker.StepsCount == -1)
+                {
+                    Walker.StepsCount = 1;
+                }
+
+
+                int item = Walker.StepsCount;
+
+                ref StepInfo step = ref Walker.StepInfos[item];
+                step.Sequence = Walker.WalkSequence;
+                step.Accepted = false;
+                step.Running = run;
+                step.OldDirection = (byte)(oldDirection & Direction.Mask);
+                step.Direction = (byte)direction;
+                step.Timer = Time.Ticks;
+                step.X = (ushort)x;
+                step.Y = (ushort)y;
+                step.Z = z;
+                step.NoRotation = step.OldDirection == (byte)direction && oldZ - z >= 11;
+
+                Walker.StepsCount++;
+
+                Steps.AddToBack
+                (
+                    new Step
+                    {
+                        X = x,
+                        Y = y,
+                        Z = z,
+                        Direction = (byte)direction,
+                        Run = run
+                    }
+                );
+
+                AsyncNetClient.Socket.Send_WalkRequest(direction, Walker.WalkSequence, run, Walker.FastWalkStack.GetValue());
+
+                if (Walker.WalkSequence == 0xFF)
+                {
+                    Walker.WalkSequence = 1;
+                }
+                else
+                {
+                    Walker.WalkSequence++;
+                }
+
+                Walker.UnacceptedPacketsCount++;
+
+                AddToTile();
+
+                int nowDelta = 0;
+
+                Walker.LastStepRequestTime = Time.Ticks + walkTime - nowDelta;
+                GetGroupForAnimation(this, 0, true);
+
+                return true;
+            }
+
+        }
+
+        bool IsCardinalDirection(Direction direction) => direction == Direction.North || direction == Direction.South ||
+                   direction == Direction.East || direction == Direction.West;
+
+        bool IsObstacle(Direction direction, int x, int y, sbyte z)
+        {
+            // Use local copies to avoid modifying the caller's x,y values
+            int testX = x;
+            int testY = y;
+            return !Pathfinder.CanWalk(ref direction, ref testX, ref testY, ref z);
+        }
+
+        Direction TryToAvoid(Direction direction, int x, int y, sbyte z)
+        {
+            switch (direction)
+            {
+                case Direction.North:
+                    return IsObstacle(Direction.East, x, y, z) ? Direction.West : Direction.East;
+                case Direction.South:
+                    return IsObstacle(Direction.East, x, y, z) ? Direction.West : Direction.East;
+                case Direction.East:
+                    return IsObstacle(Direction.North, x, y, z) ? Direction.South : Direction.North;
+                case Direction.West:
+                    return IsObstacle(Direction.North, x, y, z) ? Direction.South : Direction.North;
+                default:
+                    return direction;
+            }
+        }
+
+        public bool WalkNotAvoid(Direction direction, bool run)
+        {
+            if (Walker.WalkingFailed || Walker.LastStepRequestTime > Time.Ticks || Walker.StepsCount >= Constants.MAX_STEP_COUNT || Client.Game.UO.Version >= ClientVersion.CV_60142 && IsParalyzed || SpeedMode == CharacterSpeedType.CantWalkOrRun)
+            {
+                return false;
+            }
+
+            run |= ProfileManager.CurrentProfile.AlwaysRun;
+
+            if (SpeedMode >= CharacterSpeedType.CantRun || Stamina <= 1 && !IsDead || IsHidden && ProfileManager.CurrentProfile.AlwaysRunUnlessHidden)
+            {
+                run = false;
+            }
+
+            int x = X;
+            int y = Y;
+            sbyte z = Z;
+            Direction oldDirection = Direction;
+
+            bool emptyStack = Steps.Count == 0;
+
+            if (!emptyStack)
+            {
+                ref Step walkStep = ref Steps.Back();
+                x = walkStep.X;
+                y = walkStep.Y;
+                z = walkStep.Z;
+                oldDirection = (Direction)walkStep.Direction;
+            }
+
+            sbyte oldZ = z;
+            ushort walkTime = ProfileManager.CurrentProfile.TurnDelay;
+
+            if ((oldDirection & Direction.Mask) == (direction & Direction.Mask))
+            {
+                Direction newDir = direction;
+                int newX = x;
+                int newY = y;
+                sbyte newZ = z;
+
+                if (!Pathfinder.CanWalk(ref newDir, ref newX, ref newY, ref newZ))
+                {
+                    return false;
+                }
+
+                if ((direction & Direction.Mask) != newDir)
+                {
+                    direction = newDir;
+                }
+                else
+                {
+                    direction = newDir;
+                    x = newX;
+                    y = newY;
+                    z = newZ;
+
+                    walkTime = (ushort)MovementSpeed.TimeToCompleteMovement(run, IsMounted || SpeedMode == CharacterSpeedType.FastUnmount || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun || IsFlying);
+                }
+            }
+            else
+            {
+                Direction newDir = direction;
+                int newX = x;
+                int newY = y;
+                sbyte newZ = z;
+
+                if (!Pathfinder.CanWalk(ref newDir, ref newX, ref newY, ref newZ))
+                {
+                    if ((oldDirection & Direction.Mask) == newDir)
+                    {
+                        return false;
+                    }
+                }
+
+                if ((oldDirection & Direction.Mask) == newDir)
+                {
+                    x = newX;
+                    y = newY;
+                    z = newZ;
+
+                    walkTime = (ushort)MovementSpeed.TimeToCompleteMovement(run, IsMounted || SpeedMode == CharacterSpeedType.FastUnmount || SpeedMode == CharacterSpeedType.FastUnmountAndCantRun || IsFlying);
+                }
+
+                direction = newDir;
+            }
+
+            CloseBank();
+
+            if (emptyStack)
+            {
+                if (!IsWalking)
+                {
+                    SetAnimation(0xFF);
+                }
+
+                LastStepTime = Time.Ticks;
+            }
+
+            ref StepInfo step = ref Walker.StepInfos[Walker.StepsCount];
+            step.Sequence = Walker.WalkSequence;
+            step.Accepted = false;
+            step.Running = run;
+            step.OldDirection = (byte)(oldDirection & Direction.Mask);
+            step.Direction = (byte)direction;
+            step.Timer = Time.Ticks;
+            step.X = (ushort)x;
+            step.Y = (ushort)y;
+            step.Z = z;
+            step.NoRotation = step.OldDirection == (byte)direction && oldZ - z >= 11;
+
+            Walker.StepsCount++;
+
+            Steps.AddToBack
+            (
+                new Step
+                {
+                    X = x,
+                    Y = y,
+                    Z = z,
+                    Direction = (byte)direction,
+                    Run = run
+                }
+            );
+
+
+            AsyncNetClient.Socket.Send_WalkRequest(direction, Walker.WalkSequence, run, Walker.FastWalkStack.GetValue());
+
+
+            if (Walker.WalkSequence == 0xFF)
+            {
+                Walker.WalkSequence = 1;
+            }
+            else
+            {
+                Walker.WalkSequence++;
+            }
+
+            Walker.UnacceptedPacketsCount++;
+
+            AddToTile();
+
+            int nowDelta = 0;
+
+            //if (_lastDir == (int) direction && _lastMount == IsMounted && _lastRun == run)
+            //{
+            //    nowDelta = (int) (Time.Ticks - _lastStepTime - walkTime + _lastDelta);
+
+            //    if (Math.Abs(nowDelta) > 70)
+            //        nowDelta = 0;
+            //    _lastDelta = nowDelta;
+            //}
+            //else
+            //    _lastDelta = 0;
+
+            //_lastStepTime = (int) Time.Ticks;
+            //_lastRun = run;
+            //_lastMount = IsMounted;
+            //_lastDir = (int) direction;
+
+
+            Walker.LastStepRequestTime = Time.Ticks + walkTime - nowDelta;
+            GetGroupForAnimation(this, 0, true);
+
+            return true;
+        }
+
+        public Item[] GetEquippedItems()
+        {
+            List<Item> items = new();
+
+            for (LinkedObject i = Items; i != null; i = i.Next)
+            {
+                var it = (Item) i;
+
+                if (!it.IsDestroyed)
+                {
+                    items.Add(it);
+                }
+            }
+
+            return items.ToArray();
+        }
+    }
+}

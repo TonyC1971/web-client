@@ -1,0 +1,169 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ApplicationIcon>cuoicon.ico</ApplicationIcon>
+    <AssemblyName>cuo</AssemblyName>
+    <RootNamespace>ClassicUO</RootNamespace>
+  </PropertyGroup>
+
+  <!-- webclient-wasm fork (branch `wasm`):
+       when a consumer sets `$(IsBrowserWasm)=true` (our classicuo-wasm.csproj
+       does via MSBuild TreatAsLocalProperty), this project compiles
+       as a Library without AOT and without the Windows-only
+       cuoapi.dll reference. Desktop builds keep the original
+       Exe+AOT+x64 settings.
+       https://aka.ms/netsdk1150 explains why a WASM Exe cannot
+       reference another Exe — going Library here removes the
+       blocker end-to-end. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' != 'true'">
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <OutputType>Library</OutputType>
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <!-- v0.6.1: bake the web-client version into a strongly-typed assembly
+       attribute so the LoginGump label shows "ClassicUO Web Foss vX.Y.Z"
+       instead of the upstream "ClassicUO Version 1.1.0.0". Default is set
+       here so a bare dotnet-build from source still has a sane string;
+       release.bat / build.bat override it with the real release tag via
+       p:WebClientVersion=v0.7.8. Iterative builds (no release tag) get
+       git describe (tags + always + dirty) from build.bat as a fallback,
+       so the gump label tracks the actual git state instead of this
+       hard-coded default. -->
+  <PropertyGroup>
+    <WebClientVersion Condition="'$(WebClientVersion)' == ''">v0.7.8-dev</WebClientVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>WebClientVersion</_Parameter1>
+      <_Parameter2>$(WebClientVersion)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <OutputPath>$(ProjectDir)..\..\bin\Release\</OutputPath>
+    <PublishDir>$(ProjectDir)..\..\bin\dist\</PublishDir>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <OutputPath>$(ProjectDir)..\..\bin\Debug\</OutputPath>
+    <DefineConstants>$(DefineConstants)TRACE</DefineConstants>
+  </PropertyGroup>
+
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ClassicUO.UnitTests</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Lets the WASM host project call `internal ClassicUO.Bootstrap.Main(args)`
+         without relaxing visibility in Main.cs. -->
+    <AssemblyAttribute Condition="'$(IsBrowserWasm)' == 'true'"
+                       Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>classicuo-wasm</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Properties\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" />
+    <ProjectReference Include="..\ClassicUO.Assets\ClassicUO.Assets.csproj" />
+    <ProjectReference Include="..\ClassicUO.Renderer\ClassicUO.Renderer.csproj" />
+    <ProjectReference Include="..\ClassicUO.Utility\ClassicUO.Utility.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Resources\ResErrorMessages.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>ResErrorMessages.resx</DependentUpon>
+    </Compile>
+    <Compile Update="Resources\ResGeneral.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>ResGeneral.resx</DependentUpon>
+    </Compile>
+    <Compile Update="Resources\ResGumps.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>ResGumps.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Resources\ResErrorMessages.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>ResErrorMessages.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Resources\ResGeneral.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>ResGeneral.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Resources\ResGumps.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>ResGumps.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <DataFiles_x64 Include="$(ProjectDir)..\..\external\x64\*.*" />
+    <DataFiles_lib64 Include="$(ProjectDir)..\..\external\lib64\*.*" />
+    <DataFiles_osx Include="$(ProjectDir)..\..\external\osx\*.*" />
+    <DataFiles_vulkan Include="$(ProjectDir)..\..\external\vulkan\icd.d\*.*" />
+  </ItemGroup>
+
+  <!-- cuoapi.dll is a Windows-only native helper. Not reachable from
+       WASM (no DLL loader) and — verified by grepping the source —
+       it isn't DllImport'd from any .cs file, only referenced here.
+       Conditionally drop it for the WASM build. -->
+  <ItemGroup Condition="'$(IsBrowserWasm)' != 'true'">
+    <Reference Include="cuoapi">
+      <HintPath>..\..\external\cuoapi\cuoapi.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Plugin.cs pulls in cuoapi types (CUO_API, OnCastSpell, ...)
+       that live in cuoapi.dll. Its WASM replacement is
+       Network/Plugin.WasmStub.cs (gated by #if BROWSER_WASM).
+       PluginHost.cs stays in the compile: it defines HostBindings,
+       IPluginHost, and UnmanagedAssistantHost which are referenced
+       from Client.cs + GameController.cs + Main.cs and don't
+       depend on cuoapi. -->
+  <ItemGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <Compile Remove="Network/Plugin.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <_IsWindows Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))' == 'true'">true</_IsWindows>
+    <_IsMacOS Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</_IsMacOS>
+    <_IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</_IsLinux>
+  </PropertyGroup>
+
+  <Target Name="CopyExternalDeps_build" AfterTargets="Build">
+    <Copy SourceFiles="@(DataFiles_x64)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'$(_IsWindows)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_lib64)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'$(_IsLinux)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_osx)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'$(_IsMacOS)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_vulkan)" DestinationFolder="$(OutputPath)\vulkan\icd.d\" SkipUnchangedFiles="true" Condition="'$(_IsMacOS)' == 'true'" />
+  </Target>
+
+  <Target Name="CopyExternalDeps_publish" AfterTargets="Publish">
+    <ItemGroup>
+      <MonockickstartPath Include="$(ProjectDir)..\..\tools\monokickstart\*.*" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(DataFiles_x64)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(_IsWindows)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_lib64)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(_IsLinux)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_osx)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(_IsMacOS)' == 'true'" />
+    <Copy SourceFiles="@(DataFiles_vulkan)" DestinationFolder="$(PublishDir)\vulkan\icd.d\" SkipUnchangedFiles="true" Condition="'$(_IsMacOS)' == 'true'" />
+
+    <Copy SourceFiles="@(MonockickstartPath)" DestinationFolder="$(PublishDir)\" SkipUnchangedFiles="true" Condition="'$(_IsLinux)' == 'true' Or '$(_IsMacOS)' == 'true'" />
+
+  </Target>
+
+</Project>

@@ -1,0 +1,55 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.6.33829.357
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "XNAssets.Tests", "..\tests\XNAssets.Tests.csproj", "{68B40277-AD62-4432-945D-D19EA9FA89F3}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "XNAssets.Samples.Test.MonoGame", "..\samples\XNAssets.Samples.Test\XNAssets.Samples.Test.MonoGame.csproj", "{62BF129F-A4F8-4351-840C-5827F2843135}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XNAssets.MonoGame", "..\src\XNAssets\XNAssets.MonoGame.csproj", "{3A1C1A0B-566F-2763-41FF-58BEC67A1214}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XNAssets.FontStashSharp.MonoGame", "..\src\XNAssets.FontStashSharp\XNAssets.FontStashSharp.MonoGame.csproj", "{CAA3D274-403E-4CE8-9AFA-9B39C0AB1277}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Samples", "Samples", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XNAssets.Samples.DDSViewer.MonoGame.DesktopGL", "..\samples\XNAssets.Samples.DDSViewer\XNAssets.Samples.DDSViewer.MonoGame.DesktopGL.csproj", "{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{68B40277-AD62-4432-945D-D19EA9FA89F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{68B40277-AD62-4432-945D-D19EA9FA89F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{68B40277-AD62-4432-945D-D19EA9FA89F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{68B40277-AD62-4432-945D-D19EA9FA89F3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{62BF129F-A4F8-4351-840C-5827F2843135}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{62BF129F-A4F8-4351-840C-5827F2843135}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{62BF129F-A4F8-4351-840C-5827F2843135}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{62BF129F-A4F8-4351-840C-5827F2843135}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3A1C1A0B-566F-2763-41FF-58BEC67A1214}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3A1C1A0B-566F-2763-41FF-58BEC67A1214}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3A1C1A0B-566F-2763-41FF-58BEC67A1214}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3A1C1A0B-566F-2763-41FF-58BEC67A1214}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CAA3D274-403E-4CE8-9AFA-9B39C0AB1277}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CAA3D274-403E-4CE8-9AFA-9B39C0AB1277}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CAA3D274-403E-4CE8-9AFA-9B39C0AB1277}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CAA3D274-403E-4CE8-9AFA-9B39C0AB1277}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{62BF129F-A4F8-4351-840C-5827F2843135} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{7F475A27-C0F4-49FD-7A7D-6A7BF8A250BC} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {35ACDF4E-2CE2-46B1-A19F-35DC131069A1}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,255 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
+
+    <!-- Mercury Iter 1: enable AOT compilation. Target: cut the
+         "page load -> LoginGump added" boot from 5.1 s (interpreter)
+         toward Mercury's ~1 s. AOT compiles managed IL to native
+         wasm functions instead of interpreting them in
+         dotnet.runtime.js. Trade-off: clean publish goes from ~90 s
+         to 5-15 min. Iter 1 keeps everything else unchanged
+         (no threads, SDL2 shim, MEMFS, no SIMD).
+         WasmStripILAfterAOT=false keeps the IL alongside the AOT
+         output so reflection-heavy paths can fall back to the
+         interpreter (mixed mode). PublishTrimmed=false avoids
+         linker pruning that's already producing IL2067 warnings on
+         FNA's VertexDeclaration.FromType. WasmDedup=false matches
+         Mercury — wasm-opt's dedup pass has hit miscompiles in the
+         Mono jiterpreter scenarios in past releases. -->
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <!-- Strip IL after AOT to drop ~100 MB of interpreter fallback
+         bytes that Iter 1 kept alongside the native wasm. CUO's
+         managed surface is static enough that reflection paths
+         resolve at compile time; the mixed-mode fallback has never
+         been exercised in practice on this branch. If some reflection
+         path crashes at runtime with a "method not found", revert
+         to false. Reduces dotnet.native.wasm from 212 MB to ~100 MB,
+         which is the single biggest boot-time win we can take
+         without the Mercury runtime pack rebuild. -->
+    <!-- Flipped false 2026-04-21 while the vendored runtime pack is
+         live. AOT bakes the pre-strip MVID into the native output;
+         if the post-strip DLL's MVID drifts (even by a single byte)
+         the runtime refuses to load the AOT module with
+         "doesn't match assembly". Keeping the IL alongside AOT
+         avoids the drift entirely (mixed-mode interpreter fallback)
+         at the cost of ~100 MB in dotnet.native.wasm. Re-enable
+         once the pack vendoring path is proven and the MVID
+         preservation fix is identified. -->
+    <WasmStripILAfterAOT>false</WasmStripILAfterAOT>
+    <!-- Fixed wasm heap for THIS client (see wasm-fna-native-mercury.targets _MemoryFlags):
+         2 GiB — full fileset headroom. 🚨 The value below is the ONLY truth: this comment
+         said "3 GiB" until 2026-07-31 while the number beside it read 2 GiB, and that stale
+         comment is what a player-facing "you need about 3 GB" message was written from.
+         The flags are -sINITIAL_MEMORY with ALLOW_MEMORY_GROWTH=0, so this is COMMITTED at
+         boot, not reserved lazily — it is the hard floor for running the client at all. -->
+    <UoWasmMemBytes>2147483648</UoWasmMemBytes>
+    <WasmDedup>false</WasmDedup>
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!-- -O3 on the C/C++ compile passes of FNA3D + MojoShader + SDL
+         shims. Mercury uses -O3 across the board. Default here was
+         -O2. Expected: wasm ~5-15% smaller + faster native hot
+         paths. Doubles as a cache-invalidator for the emcc cache,
+         so this publish will recompile all natives. -->
+    <EmccCompileOptimizationFlag>-O3</EmccCompileOptimizationFlag>
+    <EmccLinkOptimizationFlag>-O3</EmccLinkOptimizationFlag>
+
+    <!-- Step (F) of the OOB root-fix sequence (memory
+         `project_oob_root_fix_sequence`). Keep native symbols in the
+         wasm so the hang at first `[go` surfaces with a readable
+         stack frame instead of `at dotnet.native.wasm.wasm-function[N]`
+         opaqueness. Mercury ships these in their production
+         celeste-wasm/terraria-wasm builds. Flip these back to
+         default (true/false) once the diagnosis tells us which
+         of D/C/A/E actually closes the bug. -->
+    <WasmNativeStrip>false</WasmNativeStrip>
+    <WasmNativeDebugSymbols>true</WasmNativeDebugSymbols>
+    <!-- wasm-opt validates produced wasm against a feature set and
+         fails on atomic ops (our SDL3 spinlock emits i32.atomic.store)
+         without the enable-threads feature flag. Disabling wasm-opt
+         gives up a small size/perf win but unblocks the link. Re-enable
+         + pass enable-threads through _WasmOptToolArgs once threaded
+         runtime is actually wired. -->
+    <WasmRunWasmOpt>false</WasmRunWasmOpt>
+
+    <!-- AOT+LTO drops the weak forwarders in sdl3_stubs.c for
+         platform-only SDL entry points (SDL_Android*, SDL_UIKit*,
+         SDL_WinRT*, SDL_GetAndroidSDKVersion, SDL_IsChromebook,
+         SDL_RenderGetD3D{9,11}Device, ...). They're declared by
+         SDL3.Legacy.cs PInvokes but never called in the browser.
+         Interpreter-only builds ignored them; wasm-ld under AOT
+         resolves them at link time and fails with "undefined
+         symbol". The linker itself suggests this flag. Same pattern
+         as Mercury celeste-wasm / terraria-wasm. -->
+    <WasmAllowUndefinedSymbols>true</WasmAllowUndefinedSymbols>
+
+    <!-- Suppress trim/AOT warnings that the SDK promotes to errors
+         with PublishAot-style strictness. CUO + FNA hit these
+         legitimately (reflection on dynamic types, content readers
+         resolved by string name) and they have managed runtime
+         fallbacks. Mercury's CelesteLoader.csproj uses the same set
+         plus a few more. Strip warnings we don't actually trip. -->
+    <NoWarn>$(NoWarn);IL2026;IL2045;IL2046;IL2055;IL2057;IL2060;IL2062;IL2065;IL2067;IL2070;IL2072;IL2075;IL2077;IL2080;IL2087;IL2090;IL2091;IL2104;IL2111</NoWarn>
+  </PropertyGroup>
+
+  <!-- Mercury Iter 3 wiring: imports SDL2.a sdl2-compat + source-
+       rebuilt FNA3D/MojoShader + our shim .c files (SDL2.c /
+       __Native.c / SDL3.c / sdl3_stubs.c). Paired with the
+       dotnet/runtime built from `tools/wsl/bootstrap-runtime-src.sh`
+       — the AOT cross compiler expects the same native layout.
+       Iter 1 / Iter 2 builds can temporarily swap this import back
+       to `..\wasm-fna-native.targets` (emscripten's own SDL2 port
+       + no-threads). Iter 3 is the default stack since commit
+       `eba4930`. -->
+  <Import Project="..\wasm-fna-native-mercury.targets" />
+
+  <!-- Patched runtime pack override. When the vendored pack at
+       vendor/runtime-pack-multithread/ is present, route MSBuild's
+       runtime resolution to it instead of the stock SDK pack. The
+       vendored pack carries:
+         - 6 Mercury patches (jiterp tuning, mixedaot, relax-typeload,
+           etc.) already shipping in upstream Mercury CI.
+         - Patch 7 (interp_mark_stack bounds + telemetry) — closes the
+           OOB that sgen_client_scan_thread_data tripped during zone
+           transitions (see docs/KNOWN_BUGS.md).
+         - Patch 8 (sgen_stop_world / sgen_restart_world idempotent)
+           — closes sgen-gc.c:3961 re-entrant stop_world assert that
+           wasm async exception unwinds were tripping on single-
+           threaded builds (root cause of the "tab freezes after
+           Entering Britannia" bug observed 2026-04-21).
+         - Patch 9 (runtime.c:146 icall_table_lookup tolerant) —
+           returns NULL instead of asserting when an AOT-emitted
+           icall references an image outside the hardcoded
+           (System.Private.CoreLib, System) table, so the rebuilt
+           runtime boots cleanly.
+       `tools/wsl/apply-runtime-oob-fix.py` + extraction populate
+       the dir. Rollback: rename/delete the dir and the Condition
+       turns off; MSBuild falls back to the stock SDK pack. -->
+  <!-- Multi-thread runtime pack — step (A) of the OOB root-fix
+       sequence. Mercury's production builds (celeste-wasm,
+       terraria-wasm) ship on the MT runtime because pthreads give
+       the runtime a stable main-thread proxy for SGen, finalisers,
+       and JS-interop; that's the architectural fix the
+       `sgen-gc.c:3961` family of re-entry bugs needs, not a per-
+       site band-aid. The MT pack carries the same patches 7/8/9 as
+       the ST pack (verified via grep of `world already stopped`
+       + `FrameDataFragment chain exceeds` in its dotnet.native.wasm
+       + runtime.c sync 2026-04-21). Booting this pack requires
+       threads-v2 scaffolding: worker loader, OffscreenCanvas
+       transfer, WASMFS — queue items (A.2)-(A.5). Expect the
+       first publish against this pack to fail at runtime with
+       `resources.jsModuleWorker must be defined`; that's the
+       signal (A.2) is next. Fallback path: flip the two values
+       below back to `false` / `runtime-pack-singlethread` — both
+       packs are vendored. -->
+  <PropertyGroup>
+    <WasmEnableThreads>true</WasmEnableThreads>
+  </PropertyGroup>
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\..\..\..\vendor\runtime-pack-multithread')">
+    <MicrosoftNetCoreAppRuntimePackDir>$(MSBuildProjectDirectory)\..\..\..\vendor\runtime-pack-multithread</MicrosoftNetCoreAppRuntimePackDir>
+    <MicrosoftNetCoreAppRuntimePackRidDir>$(MicrosoftNetCoreAppRuntimePackDir)\runtimes\browser-wasm</MicrosoftNetCoreAppRuntimePackRidDir>
+  </PropertyGroup>
+
+  <Target Name="UpdateRuntimePack" AfterTargets="ResolveFrameworkReferences"
+          Condition="'$(MicrosoftNetCoreAppRuntimePackDir)' != ''">
+    <ItemGroup>
+      <ResolvedRuntimePack PackageDirectory="$(MicrosoftNetCoreAppRuntimePackDir)"
+                           Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+    <Message Text="[runtime-pack] Using custom runtime pack: $(MicrosoftNetCoreAppRuntimePackDir)" Importance="High" />
+  </Target>
+
+  <!-- (C) AOTWhitelist pattern — Mercury's production approach
+       (celeste-wasm loader/CelesteLoader.csproj target
+       "AOTOnlyCorlib"). The full wasm AOT surface has 181
+       assemblies; shrinking it to the ~15 the game actually runs
+       on its hot path eliminates entire classes of MVID / icall /
+       SGen-interaction bugs for the other 166, because those are
+       simply interpreted by the Mono interpreter (which has its
+       own, independent dispatch).
+
+       Whitelist delimiter convention is `|Name|Name|` with leading
+       + trailing pipes so substring match against `|%(Filename)|`
+       is unambiguous. Interpret anything not in the list by
+       adding it to `_AOT_InternalForceInterpretAssemblies` before
+       `_WasmAotCompileApp` runs.
+
+       Whitelist rationale:
+         - System.Private.CoreLib / mscorlib / netstandard: must-AOT;
+           the runtime requires them precompiled.
+         - System.Collections[.Concurrent]: hot on every frame
+           (gumps list, world entities).
+         - System.IO.Compression[.Brotli]: net packet decompress is
+           on the hot path (huffman + LZ77 via zlib wrapper).
+         - System.Memory / System.Runtime: Span<T> + primitives used
+           everywhere; slow if interpreted.
+         - System.Numerics.Vectors: FNA math.
+         - FNA: graphics + windowing core.
+         - ClassicUO.{Renderer,Assets,IO,Utility}: render pipeline
+           + asset decode hot paths.
+         - cuo (ClassicUO.Client main): primary game loop.
+         - classicuo-wasm: our wasm host (JSExport bridges, input pump).
+       Everything else — System.Xml.*, System.Security.*, System.
+       Text.RegularExpressions/Json, System.Linq, System.Net.*,
+       Microsoft.*, SixLabors.ImageSharp, MP3Sharp, FileEmbed —
+       interpreted. Cost is ~5-15% higher CPU in the rare paths
+       that hit them; gain is shrinking the AOT surface dramatically.
+       -->
+  <PropertyGroup>
+    <_AOTWhitelist>|System.Private.CoreLib|mscorlib|netstandard|System.Collections|System.Collections.Concurrent|System.IO.Compression|System.IO.Compression.Brotli|System.Memory|System.Runtime|System.Numerics.Vectors|FNA|ClassicUO.Renderer|ClassicUO.Assets|ClassicUO.IO|ClassicUO.Utility|cuo|classicuo-wasm|</_AOTWhitelist>
+  </PropertyGroup>
+  <Target Name="AOTOnlyWhitelist" BeforeTargets="_WasmAotCompileApp">
+    <ItemGroup>
+      <_AOT_InternalForceInterpretAssemblies
+        Include="@(_WasmAssembliesInternal)"
+        Condition="!$([System.String]::new('$(_AOTWhitelist)').Contains('|%(Filename)|'))" />
+    </ItemGroup>
+    <Message Text="[aot-whitelist] AOT assemblies: @(_WasmAssembliesInternal->'%(Filename)', ', ')" Importance="Low" />
+    <Message Text="[aot-whitelist] Force-interpret: @(_AOT_InternalForceInterpretAssemblies->'%(Filename)', ', ')" Importance="Low" />
+    <Message Text="[aot-whitelist] AOTing @(_WasmAssembliesInternal->Count()) total, force-interpreting @(_AOT_InternalForceInterpretAssemblies->Count())" Importance="High" />
+  </Target>
+
+  <ItemGroup>
+    <StaticWebAssetFingerprintPattern Include="JS" Pattern="*.js" Expression="#[.{fingerprint}]!" />
+  </ItemGroup>
+
+  <!-- Mercury Iter 1 escape hatch: the .NET WebAssembly SDK refuses
+       to AOT-compile unless PublishTrimmed=true ("AOT is not
+       supported without IL trimming"). Trimming, however, prunes
+       reflection-heavy code paths CUO + FNA rely on (content
+       readers resolved by string name, dynamic activator) and
+       breaks at runtime instead of build-time. Mercury's
+       celeste-wasm dodges this by flipping PublishTrimmed=true
+       only for the AOT compile step itself, never letting the IL
+       linker actually prune anything. Copy that pattern verbatim.
+       Tradeoff: produced wasm is larger than a real trimmed build,
+       but matches the Mercury pattern exactly. -->
+  <Target Name="BypassWasmAOTTrimCheck" BeforeTargets="_WasmAotCompileApp">
+    <PropertyGroup>
+      <PublishTrimmed>true</PublishTrimmed>
+    </PropertyGroup>
+    <Message Text="[mercury] bypassing wasm AOT trim check (PublishTrimmed flipped true for AOT step only)" Importance="High" />
+  </Target>
+
+  <!-- TreatAsLocalProperty + IsBrowserWasm flips ClassicUO.Client.csproj
+       (on branch `wasm` of the submodule) into Library mode:
+         - OutputType=Library (fixes NETSDK1150 Exe-refs-Exe)
+         - PublishAot removed (not supported on browser-wasm)
+         - PlatformTarget=x64 removed
+         - cuoapi.dll <Reference> dropped (Windows-only, not used in .cs)
+         - DefineConstants += BROWSER_WASM for #if gates in source. -->
+  <ItemGroup>
+    <!-- `Properties="IsBrowserWasm=true"` on the ProjectReference
+         sets IsBrowserWasm=true as a global property for
+         ClassicUO.Client's sub-build. From that sub-build,
+         ClassicUO.Client's own conditional ProjectReference to
+         FNA.Core (also with Properties=) re-propagates the flag
+         so FNA.Core compiles SDL3.Legacy.wasm.cs (sdl3_* entry
+         points). Normal PropertyGroup set here does NOT propagate.
+         See https://learn.microsoft.com/en-us/visualstudio/msbuild/common-msbuild-project-items#projectreference -->
+    <ProjectReference Include="..\..\cuo\src\ClassicUO.Client\ClassicUO.Client.csproj"
+                      Properties="IsBrowserWasm=true" />
+  </ItemGroup>
+</Project>

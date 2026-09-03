@@ -1,0 +1,18 @@
+{
+  "_comment": "The ONE shard this install serves. Edit and reload — no rebuild needed. Field names must stay exactly as they are: the loader reads them by name and falls back to a default if one is misspelled, without reporting an error. In particular `slug` must be the same word as SHARD_SLUG in .env, the folder under gamefiles/, and the slug: in your servers/*.yaml — if it disagrees with the YAML the relay cannot resolve your shard and the client loads but never connects.",
+
+  "slug": "myshard",
+  "displayName": "My Shard",
+
+  "_clientVersion": "UO client version reported to the server. Match what your shard expects.",
+  "clientVersion": "7.0.45.1",
+
+  "_encrypt": "none | old_bfish | blowfish_1_25_36 | blowfish | blowfish_2_0_3 | twofish_md5. Most modern free shards use none.",
+  "encrypt": "none",
+
+  "_gamefilesUrlBase": "Path this client fetches your converted .mul files from, relative to the site root.",
+  "gamefilesUrlBase": "gamefiles",
+
+  "_externalGamefilesUrl": "Optional absolute base if you host the gamefiles elsewhere (e.g. a CDN). Leave empty to use gamefilesUrlBase.",
+  "externalGamefilesUrl": ""
+}

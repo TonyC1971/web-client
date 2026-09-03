@@ -1,0 +1,31 @@
+{
+  "name": "uo-web-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-sqlite --no-warnings=ExperimentalWarning --import tsx/esm src/index.ts",
+    "dev": "node --watch --experimental-sqlite --no-warnings=ExperimentalWarning --import tsx/esm src/index.ts",
+    "test": "node --experimental-sqlite --no-warnings=ExperimentalWarning --import tsx/esm --import ./test/_isolateConfig.ts --test --test-force-exit test/*.test.ts",
+    "start:minimal": "node --experimental-sqlite --no-warnings=ExperimentalWarning --import tsx/esm src/minimal/index.ts"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "cors": "^2.8.5",
+    "esbuild": "^0.28.1",
+    "express": "^4.22.2",
+    "pngjs": "^7.0.0",
+    "sharp": "^0.35.3",
+    "tsx": "^4.23.1",
+    "undici": "^8.5.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  }
+}

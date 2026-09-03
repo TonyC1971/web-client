@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "ClassicUO": {
+      "commandName": "Project",
+      "commandLineArgs": "-skiploginscreen"
+    },
+    "ClassicUO Profiler": {
+      "commandName": "Project",
+      "commandLineArgs": "-profiler"
+    },
+    "ClassicUO No SkipLoginScreen": {
+      "commandName": "Project"
+    }
+  }
+}

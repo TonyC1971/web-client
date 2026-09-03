@@ -1,0 +1,871 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   rail.css — vertical icon rail + modern panels (Phase 1 shell)
+
+   Faithful HTML replica of the official ClassicUO Web right-side rail, themed
+   to this client's dark-glass + gold palette (matches #sso-panel / #loader).
+   SHARED verbatim by classicuo-wasm AND tazuo-wasm (CUO builds it first, then
+   the same file is copied into the TUO bundle). Client-specific differences are
+   driven by a small config object in rail.js, never by forking this CSS.
+
+   The rail is a DOM overlay inside #stage, ABOVE the canvas (z > gamemode).
+   It is hidden until rail.js adds `.uorail-on` to the root on
+   cuo:gamescene-active, and hidden again on logout. All interactive elements
+   carry data-pointer="auto" so they get a real cursor while `body.in-game`
+   forces `cursor:none` on everything else.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Roboto Mono — the official ClassicUO Web rail font (Apache-2.0, self-hosted
+   ttf, not fingerprinted by the build so the plain url() resolves). */
+@font-face {
+  font-family: "Roboto Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("RobotoMono-Regular.ttf") format("truetype");
+}
+
+#uorail-root {
+  /* theme tokens — values MEASURED from the official play.classicuo.org rail
+     (getComputedStyle, 2026-06-04): glassy dark-navy panel + Roboto Mono text +
+     light-grey ink + golden accent + transparent icon bar. See
+     docs/dev/OFFICIAL_RAIL_REFERENCE.md. */
+  --rail-bg:        rgba(0, 0, 0, 0);                 /* bar: transparent, no strip */
+  --rail-bg-solid:  rgba(13, 13, 15, 0.96);           /* panel: near-opaque neutral black — official is "negro opaco", NOT navy (operator 2026-06-06) */
+  --rail-edge:      rgba(255, 255, 255, 0.12);
+  --rail-edge-soft: rgba(255, 255, 255, 0.06);
+  --rail-gold:      #ffd43b;                           /* accent (measured rgb(255,212,59)) */
+  --rail-gold-dim:  #ffd43b;
+  --rail-orange:    #ffd43b;
+  --rail-ink:       rgb(225, 225, 225);                /* UI text (measured) */
+  --rail-ink-dim:   rgba(225, 225, 225, 0.52);
+  --rail-icon:      rgb(201, 201, 201);                /* bar icon grey (measured) */
+  --rail-w:         80px;                              /* bar width (measured live on play.classicuo.org = 80px) */
+  --rail-panel-w:   340px;
+  --rail-shadow:    0 12px 64px rgba(0,0,0,0.6);
+  --rail-mono:      "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  --rail-sans:      "Roboto Mono", ui-monospace, "Segoe UI", system-ui, sans-serif;
+
+  position: absolute;
+  inset: 0;                 /* span the full stage so toast/panels center on the viewport */
+  z-index: 40;
+  display: none;            /* shown via .uorail-on */
+  pointer-events: none;     /* only children opt back in */
+  font-family: var(--rail-sans);
+}
+#uorail-root.uorail-on { display: block; }
+
+/* ── the bar ─────────────────────────────────────────────────────────────── */
+#uorail-bar {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: var(--rail-w);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 0;
+  pointer-events: auto;
+  background: var(--rail-bg);   /* transparent at rest — the official bar has no strip */
+  transition: background 140ms ease-out, border-color 140ms ease-out;
+  border-left: 1px solid transparent;
+  /* Short-viewport safety net: the bar is a fixed-pitch flex column (66+6px);
+     ~10 icons overrun a laptop-height (~648px) viewport and the bottom ones
+     (screenshot / fullscreen) fall off-screen. Allow it to scroll as a last
+     resort (the @media compression below is the primary fit). min-height:0 lets
+     the flex column actually shrink; the scrollbar is hidden to keep the glass
+     look. (operator 2026-07-23) */
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  scrollbar-width: none;          /* Firefox */
+}
+#uorail-bar::-webkit-scrollbar { width: 0; height: 0; }  /* Chrome/Safari */
+
+/* ── compress the rail on short viewports so every icon stays reachable ─────
+   Two steps shrink the icon pitch (button height + gap + padding + glyph) so a
+   laptop keeps the whole vertical menu on screen without scrolling; the
+   overflow-y:auto above still catches an extreme height. (operator 2026-07-23) */
+/* Selectors are #uorail-bar-scoped so they OUTWEIGH the plain `.uorail-btn` base
+   rule below regardless of source order (a @media block does NOT raise specificity,
+   so an equal-specificity later rule would otherwise win). */
+@media (max-height: 760px) {
+  #uorail-bar { padding: 8px 0; gap: 4px; }
+  #uorail-bar .uorail-btn { width: 56px; height: 54px; border-radius: 10px; }
+  #uorail-bar .uorail-btn svg { width: 27px; height: 27px; }
+  #uorail-bar .uorail-sep { margin: 2px 0; }
+}
+@media (max-height: 640px) {
+  #uorail-bar { padding: 6px 0; gap: 3px; }
+  #uorail-bar .uorail-btn { width: 52px; height: 46px; border-radius: 9px; }
+  #uorail-bar .uorail-btn svg { width: 23px; height: 23px; }
+}
+/* On hover the bar fades in a semi-opaque strip so it's obvious there's a vertical
+   menu here (operator 2026-06-11). This also covers the game's canvas cursor — which
+   the engine freezes at the bar's edge once the DOM captures the pointer — so you no
+   longer see a doubled cursor while pointing at the rail. Not fully opaque ("cierta
+   opacidad, no del todo") so it still reads as glass over the world. */
+#uorail-bar:hover {
+  background: rgba(13, 13, 15, 0.82);
+  border-left-color: var(--rail-edge);
+}
+
+#uorail-bar .uorail-spacer { flex: 1 1 auto; }
+
+#uorail-bar .uorail-sep {
+  width: 26px; height: 1px; margin: 4px 0;
+  background: var(--rail-edge-soft);
+}
+
+/* ── icon buttons ────────────────────────────────────────────────────────── */
+.uorail-btn {
+  position: relative;
+  width: 60px; height: 66px;   /* 66 + 6px bar gap = 72px icon pitch (measured official) */
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; margin: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--rail-icon);
+  cursor: pointer;
+  transition: color 120ms ease-out, background 120ms ease-out, border-color 120ms ease-out;
+}
+.uorail-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--rail-edge-soft);
+}
+.uorail-btn.uorail-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--rail-edge);
+}
+/* active accent rail on the inner edge */
+.uorail-btn.uorail-active::before {
+  content: "";
+  position: absolute; left: -8px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 3px;
+  background: var(--rail-gold);
+  box-shadow: 0 0 8px rgba(255,255,255,0.6);
+}
+.uorail-btn svg { width: 32px; height: 32px; display: block; }   /* measured official glyph = 32px */
+/* disabled rail button (e.g. World Map / UOAM until a hub backend exists) */
+.uorail-btn-disabled { opacity: 0.38; }
+.uorail-btn-disabled:hover { color: var(--rail-icon); background: none; border-color: transparent; }
+.uorail-btn-disabled.uorail-active { color: var(--rail-icon); background: rgba(255,255,255,0.05); }
+/* The site's own tooltip. Native `title` is banned in this UI, so every hint goes through
+   data-tip — including elements identified by id (#uorail-latency, the minigame bar's buttons),
+   which is why this matches the ATTRIBUTE and not a list of classes. An enumerated list was tried
+   and was already incomplete twice; a missing entry shows nothing and says nothing.
+   The rail-bar rule below overrides the placement for the bar itself. */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; left: 50%; bottom: calc(100% + 7px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 4px 9px;
+  font-size: 12px; font-family: var(--rail-sans);
+  color: var(--rail-ink);
+  background: var(--rail-bg-solid);
+  border: 1px solid var(--rail-edge-soft);
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  opacity: 0; pointer-events: none;
+  transition: opacity 110ms ease-out;
+  z-index: 5;
+}
+[data-tip]:hover::after { opacity: 1; }
+
+/* tooltip (left of the bar) — PLACEMENT ONLY.
+   🚨 It must RESET left/bottom, not just set right/top. The generic rule above also matches this
+   element, so without the reset the box is constrained on all four sides at once and an absolutely
+   positioned box constrained that way is sized by the constraints, not by its text: it collapses
+   to a sliver with the label clipped. That shipped, and the operator saw it on every rail icon.
+   Everything visual is inherited from the generic rule on purpose — two copies of the same styling
+   is what let them disagree in the first place. */
+.uorail-btn[data-tip]::after {
+  left: auto; bottom: auto;
+  right: calc(100% + 12px); top: 50%;
+  transform: translateY(-50%);
+}
+
+
+/* ── latency readout (bottom) ──────────────────────────────────────────────
+   Official: a horizontal row — a small green dot + the ms value in GOLD
+   (rgb(255,215,0)), ~16-21px. NOT a vertical dim-grey stack. */
+#uorail-latency {
+  display: flex; flex-direction: row; align-items: center; justify-content: center;
+  gap: 5px; margin-bottom: 4px;
+  font-family: var(--rail-mono); color: var(--rail-gold);
+  user-select: none;
+}
+#uorail-latency .uorail-ping-dot {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: #13ec00;                       /* official bright green rgb(19,236,0) */
+  box-shadow: 0 0 6px rgba(19,236,0,0.7);
+}
+#uorail-latency .uorail-ping-ms { font-size: 16px; line-height: 1; color: var(--rail-gold); }
+#uorail-latency.uorail-warn .uorail-ping-dot { background: #e0a23a; box-shadow: 0 0 6px rgba(224,162,58,0.7); }
+#uorail-latency.uorail-bad  .uorail-ping-dot { background: #d05a4a; box-shadow: 0 0 6px rgba(208,90,74,0.7); }
+
+/* fullscreen glyph — official renders ~40px (vs the 32px panel-icon default) */
+.uorail-btn.uorail-fs svg { width: 40px; height: 40px; }
+
+/* bottom text links (FAQ / Bug Report) — official uses plain TEXT, not icons:
+   FAQ in light-grey, Bug Report in gold, Roboto-Mono ~16px, wrapping inside the
+   80px bar. */
+.uorail-textlink {
+  flex: 0 0 auto;
+  background: none; border: 0; padding: 4px 6px; margin: 0;
+  font-family: var(--rail-mono); font-size: 16px; line-height: 1.15;
+  color: var(--rail-ink); text-align: center;
+  cursor: pointer; white-space: normal; word-break: break-word;
+  transition: color 120ms ease-out, text-shadow 120ms ease-out;
+}
+.uorail-textlink:hover { color: #fff; text-shadow: 0 0 8px rgba(255,255,255,0.4); }
+.uorail-textlink-gold { color: var(--rail-gold); }
+.uorail-textlink-gold:hover { color: #fff; text-shadow: 0 0 8px rgba(255,212,59,0.6); }
+
+/* ── panel drawer ────────────────────────────────────────────────────────── */
+#uorail-panel {
+  /* Large centered modal (matches the official ClassicUO Web panels), centered
+     in the area left of the rail bar. Was a 340px right-docked drawer. */
+  position: absolute;
+  /* Compact floating panel anchored toward the rail — matches the official
+     ClassicUO Web (measured ~860x580, right-of-center), NOT a full-height slab
+     spanning the whole screen. Body/nav scroll internally when content is tall. */
+  top: 12vh;
+  right: calc(var(--rail-w) + 4vw);
+  width: min(860px, calc(100vw - var(--rail-w) - 56px));
+  height: min(580px, calc(100vh - 150px));
+  box-sizing: border-box;
+  display: none;
+  flex-direction: column;
+  pointer-events: auto;
+  background: var(--rail-bg-solid);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  border: 1px solid var(--rail-edge);
+  border-radius: 14px;
+  box-shadow: var(--rail-shadow);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 140ms ease-out, transform 140ms ease-out;
+}
+#uorail-panel.uorail-open { display: flex; opacity: 1; transform: translateY(0); }
+
+#uorail-panel-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--rail-edge-soft);
+  cursor: move;            /* draggable window (grab the header) */
+  touch-action: none;      /* pointer drag works on touch/pen too */
+  user-select: none;
+}
+#uorail-panel-close { cursor: pointer; }
+#uorail-panel-title {
+  flex: 1 1 auto;
+  font-size: 14px; font-weight: 400; letter-spacing: 0.2px;
+  color: var(--rail-ink);
+  text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+#uorail-panel-close {
+  flex: 0 0 auto;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 7px;
+  color: var(--rail-ink-dim); font-size: 20px; line-height: 1; cursor: pointer;
+  transition: color 120ms, background 120ms;
+}
+#uorail-panel-close:hover { color: var(--rail-gold); background: rgba(255,255,255,0.10); }
+
+/* content row: LEFT vertical nav + body (official ClassicUO Web layout) */
+#uorail-panel-content {
+  flex: 1 1 auto;
+  display: flex; flex-direction: row;
+  min-height: 0; overflow: hidden;
+}
+#uorail-panel-nav {
+  flex: 0 0 auto;
+  width: 132px; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--rail-edge-soft);
+  overflow-y: auto;
+}
+#uorail-panel.uorail-no-nav #uorail-panel-nav { display: none; }
+.uorail-tab {
+  width: 100%; box-sizing: border-box; text-align: left;
+  padding: 5px 11px;
+  font-size: 12px; font-family: var(--rail-sans);
+  color: var(--rail-ink-dim);
+  background: none;
+  border: 1px solid transparent; border-radius: 8px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.uorail-tab:hover { color: var(--rail-ink); background: rgba(255,255,255,0.06); }
+.uorail-tab.uorail-tab-active {
+  color: #fff;
+  background: rgba(255,255,255,0.10);
+  border-color: var(--rail-edge-soft);
+}
+
+#uorail-panel-body {
+  flex: 1 1 auto; min-width: 0;
+  overflow-y: auto;
+  /* Horizontal padding is LARGER than vertical on purpose. At a uniform 16px the panel reads as
+     text glued to both window edges once the panel is wide — the operator reported it against the
+     World Map, whose info box and field labels then start ~17px from the frame on a ~1100px window.
+     Vertical rhythm was never the complaint, so it stays where it was.
+     The scripting panel overrides this with padding:0 (it owns its own two-column layout) and the
+     shorthand below keeps that override working. */
+  padding: 16px 24px;
+  color: var(--rail-ink);
+  font-size: 13.5px; line-height: 1.6;
+}
+#uorail-panel-body::-webkit-scrollbar { width: 9px; }
+#uorail-panel-body::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.18); border-radius: 5px;
+}
+
+/* placeholder body styling (Phase 1) */
+.uorail-ph {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: 12px;
+  padding: 28px 12px; color: var(--rail-ink-dim);
+}
+.uorail-ph svg { width: 40px; height: 40px; opacity: 0.5; }
+.uorail-ph b { color: var(--rail-ink); font-weight: 600; }
+.uorail-ph .uorail-ph-tag {
+  font-family: var(--rail-mono); font-size: 11px;
+  color: var(--rail-gold-dim);
+  border: 1px solid var(--rail-edge-soft); border-radius: 999px;
+  padding: 2px 10px;
+}
+
+/* ── toast host (top-center) ─────────────────────────────────────────────── */
+#uorail-toasts {
+  position: absolute;
+  top: 14px; left: 50%; transform: translateX(-50%);
+  z-index: 60;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  pointer-events: none;
+}
+.uorail-toast {
+  pointer-events: auto;
+  /* wrap + max-width: an actionable toast carries two buttons on top of its text, and the
+     host is centred with translateX(-50%), so without a ceiling a long one overflows BOTH
+     edges on a narrow screen -- precisely the machines this hint targets. */
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 9px 16px;
+  font-size: 13px; color: var(--rail-ink);
+  background: var(--rail-bg-solid);
+  border: 1px solid var(--rail-edge);
+  border-radius: 999px;
+  box-shadow: 0 6px 26px rgba(0,0,0,0.5);
+  opacity: 0; transform: translateY(-8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+.uorail-toast.uorail-toast-in { opacity: 1; transform: translateY(0); }
+.uorail-toast .uorail-toast-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--rail-gold); box-shadow: 0 0 7px rgba(255,255,255,0.7);
+}
+
+/* ── Scripting panel (Phase 2: editor) ───────────────────────────────────── */
+#uorail-panel-body.uorail-script-body {
+  padding: 0;
+  display: flex; flex-direction: column;
+}
+/* Official Scripting layout: left script list + right editor column. */
+.uorail-script-2col { flex: 1 1 auto; display: flex; min-height: 0; }
+.uorail-script-list { flex: 0 0 144px; display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--rail-edge-soft); }
+.uorail-script-list-head { flex: 0 0 auto; padding: 9px 12px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--rail-ink-dim); border-bottom: 1px solid var(--rail-edge-soft); }
+.uorail-script-items { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 4px; }
+.uorail-script-items .uorail-hk-item { font-size: 12px; }
+.uorail-script-ex { color: var(--rail-ink-dim); font-style: italic; }
+.uorail-script-list-foot { flex: 0 0 auto; padding: 8px; border-top: 1px solid var(--rail-edge-soft); }
+.uorail-script-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.uorail-script-toolbar {
+  flex: 0 0 auto;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rail-edge-soft);
+}
+.uorail-sbtn {
+  padding: 5px 11px;
+  font-size: 12.5px; font-family: var(--rail-sans);
+  color: var(--rail-ink);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--rail-edge-soft); border-radius: 7px;
+  cursor: pointer; white-space: nowrap;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.uorail-sbtn:hover { background: rgba(255,255,255,0.10); border-color: var(--rail-edge); color: var(--rail-gold); }
+.uorail-sbtn-run { color: #bdf0c2; border-color: rgba(110,210,130,0.35); }
+.uorail-sbtn-run:hover { color: #d6ffd9; background: rgba(110,210,130,0.16); border-color: rgba(110,210,130,0.6); }
+.uorail-sbtn-mini { padding: 2px 9px; font-size: 11px; }
+
+/* Minigames panel cards (operator 2026-07-26: "muy feo, no se respetan ningun
+   margen"). Replaces a generic .uorail-form with per-element inline margins. One
+   card per game: title row + tag chip, description, action pinned right. */
+.uorail-mg-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.uorail-mg-card {
+  background: rgba(0,0,0,0.28); border: 1px solid var(--rail-edge); border-radius: 11px;
+  padding: 13px 15px 12px;
+}
+.uorail-mg-card:hover { border-color: rgba(255,213,126,0.38); }
+.uorail-mg-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 5px; }
+.uorail-mg-name { color: var(--rail-gold); font-size: 14px; font-weight: 600; letter-spacing: .01em; }
+.uorail-mg-tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--rail-ink-dim);
+  border: 1px solid var(--rail-edge); border-radius: 999px; padding: 2px 8px; white-space: nowrap;
+}
+.uorail-mg-desc { color: var(--rail-ink-dim); font-size: 12.5px; line-height: 1.5; margin: 0 0 11px; }
+.uorail-mg-actions { display: flex; justify-content: flex-end; }
+
+
+/* Macro run state (operator 2026-07-26): only ONE macro may run at a time, so the
+   toolbar says which action is live — Run glows green while idle (press me), Stop
+   glows red while a macro is running (this is your way out). Driven by
+   setScriptBusy() in rail.js; the hard one-thread guard is in the engines. */
+.uorail-sbtn.uorail-armed-run {
+  color: #d6ffd9; background: rgba(110,210,130,0.18); border-color: rgba(110,210,130,0.75);
+  box-shadow: 0 0 0 1px rgba(110,210,130,0.25) inset;
+}
+.uorail-sbtn.uorail-armed-run:hover { background: rgba(110,210,130,0.28); border-color: rgba(140,240,160,0.95); }
+.uorail-sbtn.uorail-armed-stop {
+  color: #ffd2cc; background: rgba(220,90,74,0.20); border-color: rgba(220,90,74,0.8);
+  box-shadow: 0 0 0 1px rgba(220,90,74,0.28) inset;
+}
+.uorail-sbtn.uorail-armed-stop:hover { background: rgba(220,90,74,0.30); border-color: rgba(255,120,100,0.95); }
+/* Run is disabled while a macro runs — make that unmistakable, not just greyed. */
+.uorail-sbtn-run:disabled { opacity: 0.45; cursor: not-allowed; }
+.uorail-sbtn-run:disabled:hover { background: transparent; border-color: rgba(110,210,130,0.35); color: #bdf0c2; }
+
+/* TUO-only JS | LS (LegionScript) language toggle — segmented, right-aligned. */
+.uorail-lang-toggle { margin-left: auto; display: inline-flex; border: 1px solid var(--rail-edge-soft);
+  border-radius: 7px; overflow: hidden; }
+.uorail-lang-btn { padding: 6px 16px; font-size: 14px; font-family: var(--rail-sans); font-weight: 700;
+  letter-spacing: 0.6px; color: var(--rail-ink-dim); background: transparent; border: none; cursor: pointer;
+  white-space: nowrap; transition: color 120ms, background 120ms; }
+.uorail-lang-btn + .uorail-lang-btn { border-left: 1px solid var(--rail-edge-soft); }
+.uorail-lang-btn:hover { color: var(--rail-ink); background: rgba(255,255,255,0.06); }
+.uorail-lang-btn.uorail-lang-on { color: var(--rail-bg-solid); background: var(--rail-gold); }
+/* Scripting doc footer (Need help? · shortcut legend). */
+.uorail-script-footer { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--rail-edge-soft);
+  font-size: 12px; color: var(--rail-ink-dim); }
+.uorail-sfoot-help a { color: var(--rail-gold); text-decoration: none; }
+.uorail-sfoot-help a:hover { text-decoration: underline; }
+.uorail-sfoot-keys { font-family: var(--rail-mono); white-space: nowrap; }
+.uorail-script-footer kbd { font-family: var(--rail-mono); font-size: 11px; color: var(--rail-ink);
+  background: rgba(255,255,255,0.06); border: 1px solid var(--rail-edge-soft); border-radius: 4px; padding: 1px 5px; }
+.uorail-editor-wrap {
+  flex: 1 1 auto; min-height: 140px;
+  display: flex; flex-direction: row;
+  background: rgba(0,0,0,0.28);
+  overflow: hidden;
+}
+.uorail-gutter {
+  flex: 0 0 auto; width: 40px; box-sizing: border-box;
+  padding: 12px 7px 12px 0; margin: 0;
+  text-align: right; white-space: pre;
+  font-family: var(--rail-mono); font-size: 12.5px; line-height: 1.55;
+  color: var(--rail-ink-dim); opacity: 0.55;
+  background: rgba(0,0,0,0.22);
+  border-right: 1px solid var(--rail-edge-soft);
+  overflow: hidden; user-select: none; pointer-events: none;
+}
+.uorail-edit-area { position: relative; flex: 1 1 auto; min-width: 0; }
+/* highlight <pre> and the textarea overlap with identical metrics so the
+   colored tokens sit exactly under the caret/selection */
+.uorail-highlight, .uorail-editor {
+  position: absolute; inset: 0; margin: 0;
+  box-sizing: border-box; padding: 12px 14px; border: none;
+  font-family: var(--rail-mono); font-size: 12.5px; line-height: 1.55;
+  tab-size: 2; white-space: pre; word-wrap: normal;
+}
+.uorail-highlight { z-index: 1; color: #e7e2d4; overflow: hidden; pointer-events: none; }
+.uorail-highlight code { font: inherit; white-space: inherit; background: none; padding: 0; }
+.uorail-editor {
+  z-index: 2; resize: none; outline: none; overflow: auto;
+  background: transparent; color: transparent; caret-color: var(--rail-gold);
+}
+.uorail-editor::selection { background: rgba(255,255,255,0.28); }
+.uorail-editor::-webkit-scrollbar { width: 9px; height: 9px; }
+.uorail-editor::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 5px; }
+/* token colors */
+.uorail-highlight .tk-c { color: #6f7d62; font-style: italic; }   /* comment   */
+.uorail-highlight .tk-s { color: #d2a96b; }                       /* string    */
+.uorail-highlight .tk-k { color: #e0916b; }                       /* keyword   */
+.uorail-highlight .tk-a { color: #82b4e6; }                       /* API global*/
+.uorail-highlight .tk-l { color: #c98ad0; }                       /* literal   */
+.uorail-highlight .tk-n { color: #b9d27c; }                       /* number    */
+.uorail-out-wrap {
+  flex: 0 0 38%; min-height: 90px;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--rail-edge-soft);
+}
+.uorail-out-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--rail-ink-dim);
+}
+.uorail-out {
+  flex: 1 1 auto; overflow-y: auto;
+  padding: 6px 12px 10px;
+  font-family: var(--rail-mono); font-size: 12px; line-height: 1.5;
+  color: var(--rail-ink);
+}
+.uorail-out::-webkit-scrollbar { width: 9px; }
+.uorail-out::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 5px; }
+.uorail-out-line { white-space: pre-wrap; word-break: break-word; padding: 1px 0; }
+.uorail-out-print { color: #e7e2d4; }
+.uorail-out-sys   { color: #9fd0ff; }
+.uorail-out-ok    { color: #8fe0a0; }
+.uorail-out-err   { color: #ff9a8a; }
+.uorail-out-muted { color: var(--rail-ink-dim); font-style: italic; }
+
+/* ── Faithful panel chrome (Phase 2 — matches webclient/fotos-original/) ──── */
+/* header: icon + title */
+#uorail-panel-title { display: flex; align-items: center; gap: 9px; }
+#uorail-panel-title .uorail-title-ic { width: 18px; height: 18px; flex: 0 0 auto; color: var(--rail-ink); }
+
+/* search box atop the left nav (Options / Hotkeys) */
+.uorail-navsearch {
+  width: 100%; box-sizing: border-box; margin: 0 0 8px;
+  padding: 6px 10px; font-size: 12px; font-family: var(--rail-sans);
+  color: var(--rail-ink); background: rgba(0,0,0,0.30);
+  border: 1px solid var(--rail-edge-soft); border-radius: 8px; outline: none;
+}
+.uorail-navsearch::placeholder { color: var(--rail-ink-dim); }
+.uorail-navsearch:focus { border-color: var(--rail-edge); }
+
+/* form scaffolding */
+.uorail-form { display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+.uorail-sec { font-size: 16px; font-weight: 600; color: var(--rail-ink); margin: 2px 0 12px; }
+.uorail-sub { font-size: 12px; font-weight: 600; color: var(--rail-ink); margin: 13px 0 6px; }
+.uorail-sub:first-child { margin-top: 2px; }
+.uorail-note { color: var(--rail-ink-dim); font-size: 12.5px; padding: 4px 0 10px; }
+
+/* radios + checkboxes (native input hidden, styled sibling box) */
+.uorail-radios { display: flex; flex-direction: column; gap: 12px; padding: 2px 0 2px 6px; }
+.uorail-radio { display: flex; align-items: center; min-height: 20px; gap: 9px; cursor: pointer; user-select: none; }
+.uorail-radio input { position: absolute; opacity: 0; width: 0; height: 0; }
+.uorail-radio-box {
+  flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+  border: 1.6px solid rgba(255,255,255,0.34); background: rgba(255,255,255,0.04);
+  position: relative; transition: border-color 120ms, background 120ms;
+}
+.uorail-check .uorail-radio-box { border-radius: 50%; }   /* official checkboxes are circular */
+.uorail-radio input:checked + .uorail-radio-box { border-color: var(--rail-gold); }
+.uorail-radio input:checked + .uorail-radio-box::after {
+  content: ""; position: absolute; inset: 3px; border-radius: 50%;
+  background: var(--rail-gold); box-shadow: 0 0 6px rgba(255,255,255,0.6);
+}
+.uorail-check input:checked + .uorail-radio-box::after { border-radius: 50%; inset: 3px; }
+.uorail-radio input:focus-visible + .uorail-radio-box { outline: 2px solid var(--rail-edge); outline-offset: 2px; }
+.uorail-radio-txt { font-size: 12px; color: var(--rail-ink); }
+
+/* labeled field (slider / select) */
+.uorail-field { margin: 12px 0 4px; }
+.uorail-field-lbl { font-size: 12px; color: var(--rail-ink); margin-bottom: 5px; }
+.uorail-textb { width: 100%; max-width: 220px; padding: 6px 9px; font-size: 12.5px; font-family: var(--rail-mono);
+  color: var(--rail-ink); background: rgba(255,255,255,0.05); border: 1px solid var(--rail-edge-soft); border-radius: 7px; }
+.uorail-textb:focus { outline: none; border-color: var(--rail-gold); }
+/* Hue/colour swatch row + UO palette picker popup. */
+.uorail-huefield { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 7px 0; }
+.uorail-huefield .uorail-field-lbl { margin: 0; }
+.uorail-hue-swatch { display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px 3px 3px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--rail-edge-soft); border-radius: 7px; cursor: pointer; }
+.uorail-hue-swatch:hover { border-color: var(--rail-gold); }
+.uorail-hue-fill { width: 26px; height: 18px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.4);
+  background: repeating-conic-gradient(#3a3a3a 0% 25%, #555 0% 50%) 50% / 10px 10px; }
+.uorail-hue-fill.uorail-hue-none { background: repeating-conic-gradient(#2a2f3a 0% 25%, #444b5a 0% 50%) 50% / 8px 8px; }
+.uorail-hue-idx { font-size: 11px; font-family: var(--rail-mono); color: var(--rail-ink-dim); min-width: 30px; text-align: center; }
+.uorail-hue-overlay { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45); backdrop-filter: blur(2px); }
+.uorail-hue-box { width: min(92%, 700px); max-height: 86%; display: flex; flex-direction: column;
+  background: var(--rail-bg-solid); border: 1px solid var(--rail-edge); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.5); }
+.uorail-hue-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--rail-edge-soft);
+  font-size: 14px; color: var(--rail-ink); }
+.uorail-hue-head span { flex: 1 1 auto; }
+.uorail-hue-default, .uorail-hue-close { padding: 4px 10px; font-size: 12px; font-family: var(--rail-sans); color: var(--rail-ink);
+  background: rgba(255,255,255,0.05); border: 1px solid var(--rail-edge-soft); border-radius: 6px; cursor: pointer; }
+.uorail-hue-default:hover, .uorail-hue-close:hover { color: var(--rail-gold); border-color: var(--rail-edge); }
+.uorail-hue-scroll { overflow: auto; padding: 10px; }
+.uorail-hue-canvas { display: block; image-rendering: pixelated; cursor: crosshair; }
+
+/* range slider */
+.uorail-range { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 3px;
+  background: rgba(255,255,255,0.14); outline: none; cursor: pointer; }
+.uorail-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 15px; height: 15px;
+  border-radius: 50%; background: var(--rail-gold); box-shadow: 0 0 6px rgba(255,255,255,0.5); cursor: pointer; }
+.uorail-range::-moz-range-thumb { width: 15px; height: 15px; border: none; border-radius: 50%; background: var(--rail-gold); cursor: pointer; }
+
+/* select / dropdown (custom chevron + separator, like the fotos) */
+.uorail-select-wrap { position: relative; }
+.uorail-select {
+  -webkit-appearance: none; appearance: none; width: 100%; box-sizing: border-box;
+  padding: 9px 38px 9px 12px; font-size: 13px; font-family: var(--rail-sans);
+  color: var(--rail-ink); background: rgba(0,0,0,0.30);
+  border: 1px solid var(--rail-edge-soft); border-radius: 8px; cursor: pointer; outline: none;
+}
+.uorail-select:focus { border-color: var(--rail-edge); }
+.uorail-select option { background: var(--rail-bg-solid); color: var(--rail-ink); }
+.uorail-select-chev {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 30px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--rail-ink-dim); font-size: 14px; pointer-events: none;
+  border-left: 1px solid var(--rail-edge-soft);
+}
+
+/* text input + pill buttons */
+.uorail-input {
+  box-sizing: border-box; padding: 8px 11px; font-size: 13px; font-family: var(--rail-sans);
+  color: var(--rail-ink); background: rgba(0,0,0,0.30);
+  border: 1px solid var(--rail-edge-soft); border-radius: 8px; outline: none;
+}
+.uorail-input:focus { border-color: var(--rail-edge); }
+.uorail-btn-pill {
+  padding: 7px 14px; font-size: 12.5px; font-family: var(--rail-sans);
+  color: var(--rail-ink); background: rgba(255,255,255,0.06);
+  border: 1px solid var(--rail-edge-soft); border-radius: 8px; cursor: pointer; white-space: nowrap;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.uorail-btn-pill:hover { color: var(--rail-gold); background: rgba(255,255,255,0.10); border-color: var(--rail-edge); }
+.uorail-btn-sm { padding: 4px 12px; font-size: 11.5px; }
+
+/* ── modal prompt / confirm ──────────────────────────────────────────────── */
+/* 🚨 `pointer-events: auto` is the whole reason these rules exist, not styling.
+   The overlay is appended into #uorail-root, which is `pointer-events: none` so
+   clicks fall through to the game canvas; only children opt back in. It had no
+   rule at all and set its look from inline styles, so OK/Cancel were VISIBLE and
+   UNCLICKABLE — Enter/Escape worked (window keydown), which is why this read as
+   "the buttons do nothing" rather than "the dialog is dead". Styling here also
+   puts it on the rail's own tokens instead of the system font it was using. */
+.uorail-prompt-overlay {
+  position: fixed; inset: 0; z-index: 2147483000; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.uorail-prompt-box {
+  min-width: 300px; max-width: 90vw;
+  background: var(--rail-bg-solid); border: 1px solid var(--rail-edge);
+  border-radius: 10px; box-shadow: var(--rail-shadow);
+  padding: 18px 18px 14px; font-family: var(--rail-sans);
+}
+.uorail-prompt-title {
+  color: var(--rail-gold); font-family: var(--rail-sans);
+  font-size: 14px; margin-bottom: 12px;
+}
+.uorail-prompt-box input[type="text"],
+.uorail-prompt-box input[type="password"] {
+  width: 100%; box-sizing: border-box; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid var(--rail-edge-soft);
+  background: rgba(255,255,255,0.06); color: var(--rail-ink);
+  font-family: var(--rail-sans); font-size: 13px; outline: none;
+}
+.uorail-prompt-box input[type="text"]:focus,
+.uorail-prompt-box input[type="password"]:focus { border-color: var(--rail-gold); }
+.uorail-prompt-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+/* The affirmative button carries the accent; the pill hover rules still apply. */
+.uorail-prompt-ok { color: var(--rail-gold); border-color: var(--rail-edge); }
+
+/* small icon buttons (+, −, ▶, etc.) */
+.uorail-icon-btn {
+  flex: 0 0 auto; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; color: var(--rail-ink);
+  background: rgba(255,255,255,0.05); border: 1px solid var(--rail-edge-soft);
+  border-radius: 7px; cursor: pointer; transition: color 120ms, background 120ms, border-color 120ms;
+}
+.uorail-icon-btn:hover { color: var(--rail-gold); background: rgba(255,255,255,0.10); border-color: var(--rail-edge); }
+.uorail-icon-danger { color: #ff9a8a; border-color: rgba(208,90,74,0.4); }
+.uorail-icon-danger:hover { color: #ffc2b6; background: rgba(208,90,74,0.16); }
+.uorail-icon-sm { width: 24px; height: 24px; font-size: 12px; }
+
+/* Agents: autoloot row */
+.uorail-loot-row { display: flex; align-items: center; gap: 10px; padding: 6px 0 2px; flex-wrap: wrap; }
+.uorail-loot-slot { width: 38px; height: 38px; border-radius: 8px; background: rgba(0,0,0,0.28); border: 1px solid var(--rail-edge-soft); }
+/* autoloot backpack slot — official shows a backpack here, not an empty box */
+.uorail-loot-pack { display: flex; align-items: center; justify-content: center; color: var(--rail-gold); }
+.uorail-loot-pack svg { width: 26px; height: 26px; display: block; }
+/* autoloot type-list rows — each shows the REAL item art + clean name.
+   The "+" enters target mode (no modal picker); art comes from the bridge. */
+.uorail-al-item { display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: 6px; background: rgba(255,255,255,0.04); margin: 3px 0; font-size: 13px; }
+.uorail-al-art { width: 30px; height: 30px; flex: 0 0 30px; display: flex; align-items: center; justify-content: center; }
+.uorail-al-img { max-width: 30px; max-height: 30px; image-rendering: pixelated; display: block; }
+.uorail-al-name { flex: 1 1 auto; color: var(--rail-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uorail-loot-pack .uorail-al-img { max-width: 34px; max-height: 34px; }
+/* Durability tracker (Agents > Durability) — worn gear + live durability bars */
+.uorail-dura-list { border: 1px solid var(--rail-edge-soft); border-radius: 7px; padding: 4px; margin: 4px 0 8px; min-height: 38px; }
+.uorail-dura-row { display: flex; align-items: center; gap: 9px; padding: 5px 6px; border-radius: 6px; margin: 3px 0; background: rgba(255,255,255,0.04); }
+.uorail-dura-mid { flex: 1 1 auto; min-width: 0; }
+.uorail-dura-name { font-size: 12.5px; color: var(--rail-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uorail-dura-bar { height: 6px; border-radius: 4px; background: rgba(0,0,0,0.30); overflow: hidden; margin-top: 4px; }
+.uorail-dura-fill { height: 100%; transition: width 200ms, background 200ms; }
+.uorail-dura-val { flex: 0 0 auto; font-family: var(--rail-mono); font-size: 11px; color: var(--rail-ink-dim); }
+/* Lists agent (Friends / Enemies) — two columns of name rows */
+.uorail-list-col { flex: 1 1 0; min-width: 0; }
+/* World Map — UOAM live position sharing (radar + peer list) */
+.uoam-radar { width: 100%; max-width: 320px; height: auto; border: 1px solid var(--rail-edge-soft);
+  border-radius: 8px; background: rgba(0,0,0,0.30); display: block; margin: 4px 0 8px; }
+.uoam-peers { display: flex; flex-direction: column; gap: 3px; }
+.uoam-peer { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 7px; border-radius: 6px; background: rgba(255,255,255,0.04); font-size: 12.5px; }
+.uoam-peer-name { color: var(--rail-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uoam-peer-loc { flex: 0 0 auto; color: var(--rail-ink-dim); font-family: var(--rail-mono); font-size: 11px; }
+
+/* Hotkeys: macro list + editor */
+.uorail-hk { display: flex; flex-direction: row; gap: 16px; }
+.uorail-hk-col { flex: 0 0 168px; display: flex; flex-direction: column; gap: 8px; }
+.uorail-hk-add { display: flex; gap: 6px; }
+.uorail-hk-add .uorail-btn-pill:first-child { flex: 1 1 auto; }
+.uorail-hk-list { display: flex; flex-direction: column; gap: 1px; border-left: 1px solid var(--rail-edge-soft); padding-left: 4px; }
+.uorail-hk-item { text-align: left; padding: 6px 10px; font-size: 13px; color: var(--rail-ink-dim);
+  background: none; border: none; border-radius: 6px; cursor: pointer; transition: color 120ms, background 120ms; }
+.uorail-hk-item:hover { color: var(--rail-ink); background: rgba(255,255,255,0.06); }
+.uorail-hk-item-active { color: var(--rail-gold); background: rgba(255,255,255,0.10); }
+.uorail-hk-edit { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.uorail-hk-name { display: flex; align-items: center; gap: 8px; }
+.uorail-hk-name .uorail-input { flex: 1 1 auto; }
+.uorail-hk-bind { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.uorail-key { padding: 5px 10px; font-size: 12px; font-family: var(--rail-mono); color: var(--rail-ink);
+  background: rgba(255,255,255,0.06); border: 1px solid var(--rail-edge-soft); border-radius: 6px; }
+.uorail-key-plus { color: var(--rail-ink-dim); }
+.uorail-key-x { padding: 5px 9px; font-size: 12px; color: var(--rail-ink-dim);
+  border: 1px solid var(--rail-edge-soft); border-radius: 6px; cursor: pointer; background: rgba(255,255,255,0.04); }
+.uorail-key-x:hover { color: var(--rail-gold); border-color: var(--rail-edge); }
+/* macro keybind capture box (native HotkeyBox equivalent) */
+.uorail-key-capture { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; cursor: pointer;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--rail-edge-soft); border-radius: 6px; color: var(--rail-ink);
+  font-size: 12px; font-family: var(--rail-mono); transition: color 120ms, border-color 120ms; }
+.uorail-key-capture:hover { color: var(--rail-gold); border-color: var(--rail-edge); }
+.uorail-key-capture .uorail-key { background: none; border: none; padding: 0; }
+.uorail-key-capturing { color: var(--rail-gold); border-color: var(--rail-gold); }
+/* blue info box atop Agents tabs (Recording/Durability/…) — matches official */
+.uorail-infobox { background: rgba(90,140,255,0.10); border: 1px solid rgba(90,140,255,0.34);
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+.uorail-infobox-t { color: #9ec1ff; font-size: 14px; margin-bottom: 4px; }
+.uorail-infobox-b { color: var(--rail-ink-dim); font-size: 12.5px; line-height: 1.5; }
+.uorail-rec { color: #ff7a6a; }
+.uorail-hk-action-lbl { font-size: 12px; color: var(--rail-ink-dim); margin-top: 2px; }
+.uorail-hk-action { display: flex; align-items: center; gap: 6px; }
+.uorail-hk-actiontext { flex: 1 1 auto; padding: 7px 10px; font-size: 13px; font-family: var(--rail-mono);
+  color: var(--rail-ink); background: rgba(255,255,255,0.05); border: 1px solid var(--rail-edge-soft); border-radius: 6px; }
+/* Hotkeys: macro action-chain editor (mirrors native MacroControl rows). */
+.uorail-macro-list { display: flex; flex-direction: column; gap: 8px; }
+.uorail-macro-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+  padding: 8px; border: 1px solid var(--rail-edge-soft); border-radius: 8px; background: rgba(255,255,255,0.03); }
+.uorail-macro-type, .uorail-macro-sub, .uorail-macro-text {
+  box-sizing: border-box; font-size: 12.5px; font-family: var(--rail-sans); color: var(--rail-ink);
+  background: rgba(0,0,0,0.30); border: 1px solid var(--rail-edge-soft); border-radius: 6px; padding: 6px 8px; outline: none; }
+.uorail-macro-type { flex: 1 1 auto; min-width: 0; }
+.uorail-macro-sub, .uorail-macro-text { flex: 1 1 100%; margin-left: 16px; }
+.uorail-macro-type:focus, .uorail-macro-sub:focus, .uorail-macro-text:focus { border-color: var(--rail-gold); }
+.uorail-macro-add { margin-top: 4px; }
+.uorail-macro-add .uorail-btn-pill { width: 100%; }
+/* Hotkeys binding tables (Combat/General/Skills/Spells/Target/…). */
+.uorail-bind-head { display: flex; align-items: center; gap: 10px; padding: 4px 4px 7px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--rail-ink-dim);
+  border-bottom: 1px solid var(--rail-edge-soft); }
+.uorail-bind-head .uorail-bind-cmd { flex: 1 1 auto; }
+.uorail-bind-kh { width: 90px; text-align: center; }
+.uorail-bind-list { display: flex; flex-direction: column; }
+.uorail-bind-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.uorail-bind-cmd { flex: 1 1 auto; font-size: 12px; color: var(--rail-ink); }
+.uorail-bind-key { width: 90px; padding: 4px 0; font-size: 11.5px; font-family: var(--rail-mono);
+  color: var(--rail-ink-dim); background: rgba(255,255,255,0.04); border: 1px solid var(--rail-edge-soft);
+  border-radius: 6px; cursor: pointer; text-align: center; }
+.uorail-bind-key:hover { color: var(--rail-gold); border-color: var(--rail-edge); }
+/* Agents → Lists (Friends/Enemy) + recording status. */
+.uorail-al-list { border: 1px solid var(--rail-edge-soft); border-radius: 7px; padding: 4px; margin: 4px 0 6px; min-height: 38px; }
+/* Razor-style agent list (Restock/Dress): toolbar + list area */
+.uorail-aglb { display: flex; flex-direction: column; gap: 8px; max-width: 300px; }
+.uorail-aglb-bar { display: flex; gap: 6px; }
+.uorail-aglb-add { color: #7aa2ff; border-color: rgba(122,162,255,0.45); }
+.uorail-aglb-add:hover { color: #aac4ff; background: rgba(122,162,255,0.16); border-color: rgba(122,162,255,0.6); }
+.uorail-aglb-list { min-height: 230px; border: 1px solid var(--rail-edge-soft); border-radius: 8px;
+  background: rgba(0,0,0,0.22); padding: 8px; }
+.uorail-ag2col { display: flex; flex-direction: row; gap: 22px; align-items: flex-start; }
+.uorail-ag2col .uorail-aglb { flex: 0 0 280px; }
+.uorail-ag2col-side { flex: 1 1 auto; min-width: 0; max-width: 260px; display: flex; flex-direction: column; gap: 8px; }
+.uorail-ag2col-side .uorail-btn-pill { width: 100%; text-align: center; }
+.uorail-ag2col-side .uorail-btn-pill[disabled] { opacity: 0.45; cursor: default; }
+.uorail-rec-btn.uorail-btn-pill { color: #ff9a8a; }
+.uorail-rec-status { min-height: 16px; }
+/* Chat agent (native UO conference) */
+.uorail-chat-cur { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 8px; }
+.uorail-chat-curname { font-size: 12.5px; color: var(--rail-ink); }
+.uorail-chat-join, .uorail-chat-send { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.uorail-chat-join .uorail-input, .uorail-chat-send .uorail-input { width: 100%; }
+
+/* User: main + right action column */
+.uorail-user { display: flex; flex-direction: row; gap: 18px; }
+.uorail-user-main { flex: 1 1 auto; min-width: 0; }
+.uorail-user-side { flex: 0 0 232px; box-sizing: border-box; padding-right: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* Account identity (real Discord session) */
+.uorail-acct { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
+.uorail-acct-av { width: 46px; height: 46px; border-radius: 50%; flex: 0 0 auto; object-fit: cover;
+  border: 1px solid var(--rail-edge); }
+.uorail-acct-av-ph { background: rgba(255,255,255,0.08); }
+.uorail-acct-meta { min-width: 0; }
+.uorail-acct-name { font-size: 15px; color: var(--rail-ink); font-weight: 600; }
+/* Storage usage bar (real navigator.storage.estimate) */
+.uorail-storage-val { color: var(--rail-ink-dim); font-size: 12px; }
+.uorail-storage-bar { height: 8px; border-radius: 5px; background: rgba(0,0,0,0.28);
+  border: 1px solid var(--rail-edge-soft); overflow: hidden; margin-top: 5px; }
+.uorail-storage-fill { height: 100%; background: var(--rail-gold); transition: width 240ms; }
+/* Per-shard cached-gamefiles breakdown (mirrors the Discord storage modal,
+   re-skinned with the dura-list visual language). */
+.uorail-sm-list { border: 1px solid var(--rail-edge-soft); border-radius: 7px; padding: 4px; margin: 5px 0 8px; min-height: 38px; }
+.uorail-sm-row { display: flex; align-items: center; gap: 9px; padding: 6px 7px; border-radius: 6px; margin: 3px 0; background: rgba(255,255,255,0.04); }
+.uorail-sm-mid { flex: 1 1 auto; min-width: 0; }
+.uorail-sm-name { font-size: 12.5px; color: var(--rail-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uorail-sm-sub { font-size: 11px; color: var(--rail-ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.uorail-sm-size { font-size: 12px; color: var(--rail-ink-dim); white-space: nowrap; flex: 0 0 auto; }
+.uorail-sm-del { flex: 0 0 auto; font-family: var(--rail-sans); font-size: 11.5px; color: var(--rail-ink);
+  background: rgba(0,0,0,0.28); border: 1px solid var(--rail-edge-soft); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.uorail-sm-del:hover { background: rgba(200,60,60,0.30); border-color: rgba(200,60,60,0.55); }
+.uorail-sm-del:disabled { opacity: 0.55; cursor: default; }
+.uorail-act {
+  display: flex; align-items: center; gap: 9px;
+  text-align: left; padding: 10px 13px; font-size: 12.5px; font-family: var(--rail-sans);
+  color: var(--rail-ink); background: rgba(255,255,255,0.05);
+  border: 1px solid var(--rail-edge-soft); border-radius: 9px; cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.uorail-act-ic { width: 15px; height: 15px; flex: 0 0 auto; opacity: 0.82; }
+.uorail-act:hover { color: var(--rail-gold); background: rgba(255,255,255,0.10); border-color: var(--rail-edge); }
+.uorail-act-gold { color: var(--rail-orange); border-color: rgba(230,164,78,0.45); }
+.uorail-act-gold:hover { color: #f3bd6e; background: rgba(230,164,78,0.12); border-color: rgba(230,164,78,0.6); }
+.uorail-pid { display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  font-family: var(--rail-mono); font-size: 11px; color: var(--rail-ink-dim); }
+
+/* keep the rail clear of small viewports' on-screen bits, never on mobile shell */
+body.mobile-view #uorail-root { display: none !important; }
+
+/* A note that carries a consequence, not just information: browser-only storage that a cache
+   wipe destroys. Amber rather than red — nothing is broken, but the player must see it. */
+.uorail-note-warn {
+  color: var(--rail-gold);
+  background: rgba(255, 212, 59, 0.08);
+  border: 1px solid rgba(255, 212, 59, 0.28);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  line-height: 1.45;
+}

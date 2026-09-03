@@ -1,0 +1,62 @@
+name: Build & Publish Beta
+
+on:
+    push:
+        branches:
+            - master    
+        paths:
+            - 'src/**'
+            - 'build/**'
+            - 'samples/**'
+    workflow_dispatch:
+
+jobs:
+  BuildAndPublish:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+    - name: Extract Version
+      shell: pwsh
+      run: |
+        $versionSuffix = "-beta-"+$Env:GITHUB_RUN_NUMBER
+        echo "VERSION_SUFFIX=$versionSuffix"
+        echo "VERSION_SUFFIX=$versionSuffix" >> $Env:GITHUB_ENV
+        $version = select-string -Path 'Directory.Build.Props' -Pattern '<VersionPrefix>(.*)<\/VersionPrefix>' -AllMatches | % { $_.Matches } | % { $_.Groups[1].Value }
+        $version += $versionSuffix
+        echo "VERSION=$version"
+        echo "VERSION=$version" >> $Env:GITHUB_ENV
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '8.0.x'
+    - name: Build Myra.MonoGame
+      run: dotnet build build\Myra.MonoGame.sln --configuration Release --version-suffix ${{env.VERSION_SUFFIX}}
+    - name: Build Myra.Stride
+      run: dotnet build build\Myra.Stride.sln --configuration Release --version-suffix ${{env.VERSION_SUFFIX}}
+    - name: Build Myra.PlatformAgnostic
+      run: dotnet build build\Myra.PlatformAgnostic.sln --configuration Release --version-suffix ${{env.VERSION_SUFFIX}}
+    - name: Test
+      run: dotnet test build\Myra.MonoGame.sln --verbosity normal
+    - name: Build Binary Distribution
+      shell: pwsh
+      run: ./buildBinaryDistribution.ps1 ${{env.VERSION}}
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Myra.${{env.VERSION}}.zip
+        path: Myra.${{env.VERSION}}.zip
+        retention-days: 10
+    - name: Install NuGet
+      uses: NuGet/setup-nuget@v2
+    - name: Publish Myra.MonoGame to MyGet
+      run: nuget.exe push src\Myra\bin\MonoGame\Release\Myra.*.nupkg ${{secrets.MYGET_APIKEY}} -Source https://www.myget.org/F/abarim-games/api/v2/package
+      continue-on-error: true
+    - name: Publish Myra.Stride to MyGet
+      run: nuget.exe push src\Myra\bin\Stride\Release\Myra.Stride.*.nupkg ${{secrets.MYGET_APIKEY}} -Source https://www.myget.org/F/abarim-games/api/v2/package
+      continue-on-error: true
+    - name: Publish Myra.PlatformAgnostic to MyGet
+      run: nuget.exe push src\Myra\bin\PlatformAgnostic\Release\Myra.PlatformAgnostic.*.nupkg ${{secrets.MYGET_APIKEY}} -Source https://www.myget.org/F/abarim-games/api/v2/package
+      continue-on-error: true

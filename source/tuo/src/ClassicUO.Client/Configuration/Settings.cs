@@ -1,0 +1,186 @@
+﻿// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using ClassicUO.Assets;
+using ClassicUO.Configuration.Json;
+using ClassicUO.Game;
+using Microsoft.Xna.Framework;
+
+namespace ClassicUO.Configuration
+{
+    [JsonSourceGenerationOptions(WriteIndented = true, GenerationMode = JsonSourceGenerationMode.Metadata)]
+    [JsonSerializable(typeof(Settings), GenerationMode = JsonSourceGenerationMode.Metadata)]
+    sealed partial class SettingsJsonContext : JsonSerializerContext
+    {
+        // horrible fix: https://github.com/ClassicUO/ClassicUO/issues/1663
+        public static SettingsJsonContext RealDefault { get; } = new SettingsJsonContext(
+            new JsonSerializerOptions()
+            {
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            });
+    }
+
+    public sealed class Settings
+    {
+        [JsonIgnore] public CustomServers? CustomServer;
+
+        public const string SETTINGS_FILENAME = "settings.json";
+        public static Settings GlobalSettings = new Settings();
+        public static string CustomSettingsFilepath = null;
+
+
+        [JsonPropertyName("username")] public string Username { get; set; } = string.Empty;
+
+        [JsonPropertyName("password")] public string Password { get; set; } = string.Empty;
+
+        [JsonPropertyName("ip")]
+        public string IP
+        {
+            get;
+            set
+            {
+                field = value;
+                DetectCustomServers();
+            }
+        } = "";
+
+        [JsonPropertyName("port"), JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)] public ushort Port { get; set; } = 2593;
+
+        /**
+         * Ignores the login servers relay packet, connects back with the settings IP
+         */
+        [JsonPropertyName("ignore_relay_ip")] public bool IgnoreRelayIp { get; set; } = false;
+
+        [JsonPropertyName("ultimaonlinedirectory")] public string UltimaOnlineDirectory { get; set; } = "";
+
+        [JsonPropertyName("profilespath")] public string ProfilesPath { get; set; } = string.Empty;
+
+        [JsonPropertyName("clientversion")] public string ClientVersion { get; set; } = string.Empty;
+
+        [JsonPropertyName("lang")] public string Language { get; set; } = "";
+
+        [JsonPropertyName("lastservernum")] public ushort LastServerNum { get; set; } = 1;
+
+        [JsonPropertyName("last_server_name")] public string LastServerName { get; set; } = string.Empty;
+
+        // Default 45, not 60 (operator 2026-07-28): a lot of players are on PCs ten
+        // years old, and the frames above this cost more than they give. MAX_FPS is
+        // already 60 in Constants, which is the ceiling the operator wanted.
+        [JsonPropertyName("fps")] public int FPS { get; set; } = 45;
+
+        [JsonConverter(typeof(NullablePoint2Converter))][JsonPropertyName("window_position")] public Point? WindowPosition { get; set; }
+        [JsonConverter(typeof(NullablePoint2Converter))][JsonPropertyName("window_size")] public Point? WindowSize { get; set; }
+
+        [JsonPropertyName("is_win_maximized")] public bool IsWindowMaximized { get; set; } = true;
+
+        [JsonPropertyName("saveaccount")] public bool SaveAccount { get; set; } = true;
+
+        [JsonPropertyName("autologin")] public bool AutoLogin { get; set; }
+
+        [JsonPropertyName("reconnect")] public bool Reconnect { get; set; }
+
+        [JsonPropertyName("reconnect_time")] public int ReconnectTime { get; set; } = 1;
+
+        [JsonPropertyName("login_music")] public bool LoginMusic { get; set; } = true;
+
+        [JsonPropertyName("login_music_volume")] public int LoginMusicVolume { get; set; } = 50;
+
+        [JsonPropertyName("fixed_time_step")] public bool FixedTimeStep { get; set; } = true;
+
+        [JsonPropertyName("run_mouse_in_separate_thread")]
+        public bool RunMouseInASeparateThread { get; set; } = true;
+
+        [JsonPropertyName("force_driver")] public byte ForceDriver { get; set; }
+
+        [JsonPropertyName("use_verdata")] public bool UseVerdata { get; set; }
+
+        [JsonPropertyName("maps_layouts")] public string MapsLayouts { get; set; }
+
+        [JsonPropertyName("encryption")] public byte Encryption { get; set; }
+
+        [JsonPropertyName("plugins")] public string[] Plugins { get; set; } = { "" };
+
+        [JsonIgnore] public bool SkipServerSelect { get; set; }
+
+        /// <summary>
+        /// Uses the campfire/Diablo-style character selection screen instead of the classic list.
+        /// SQL-backed (Global scope) rather than JSON so it can be read/written at the
+        /// character-selection screen before any profile is loaded; persists on assignment.
+        /// </summary>
+        [JsonIgnore]
+        public bool UseCampfireCharacterSelect
+        {
+            get => Client.Settings.Get(SettingsScope.Global, Constants.SqlSettings.CAMPFIRE_CHAR_SELECT, false);
+            set => Client.Settings.Set(SettingsScope.Global, Constants.SqlSettings.CAMPFIRE_CHAR_SELECT, value);
+        }
+
+        /// <summary>
+        /// UI language code used for TazLang strings, persisted in global SQL settings.
+        /// Defaults to <c>"EN"</c> when no value is stored.
+        /// </summary>
+        [JsonIgnore]
+        public string UILanguage
+        {
+            get => Client.Settings.Get(SettingsScope.Global, Constants.SqlSettings.UI_LANGUAGE, "EN");
+            set => Client.Settings.Set(SettingsScope.Global, Constants.SqlSettings.UI_LANGUAGE, value);
+        }
+
+        public static string GetSettingsFilepath()
+        {
+            if (CustomSettingsFilepath != null)
+            {
+                if (Path.IsPathRooted(CustomSettingsFilepath))
+                {
+                    return CustomSettingsFilepath;
+                }
+
+                return Path.Combine(CUOEnviroment.ExecutablePath, CustomSettingsFilepath);
+            }
+
+            return Path.Combine(CUOEnviroment.ExecutablePath, SETTINGS_FILENAME);
+        }
+
+        public void Save()
+        {
+            // Make a copy of the settings object that we will use in the saving process
+            string json = JsonSerializer.Serialize(this, SettingsJsonContext.RealDefault.Settings);
+            Settings settingsToSave = JsonSerializer.Deserialize(json, SettingsJsonContext.RealDefault.Settings);
+
+            // Make sure we don't save username and password if `saveaccount` flag is not set
+            // NOTE: Even if we pass username and password via command-line arguments they won't be saved
+            if (!settingsToSave.SaveAccount)
+            {
+                settingsToSave.Username = string.Empty;
+                settingsToSave.Password = string.Empty;
+            }
+
+            settingsToSave.ProfilesPath = string.Empty;
+
+            // NOTE: We can do any other settings clean-ups here before we save them
+
+            ConfigurationResolver.Save(settingsToSave, GetSettingsFilepath(), SettingsJsonContext.RealDefault.Settings);
+        }
+
+        private void DetectCustomServers()
+        {
+            string[] _eventineIPs = ["shard.uoeventine.net", "shard.uoeventine.com"];
+
+            if (_eventineIPs.Contains(IP))
+            {
+                CustomServer = CustomServers.Eventine;
+                CustomServerSettings.GetCustomAnimPath = () => Path.Combine(Path.GetFullPath(UltimaOnlineDirectory), "Anims" );
+                return;
+            }
+        }
+
+        public enum CustomServers
+        {
+            LOCAL_SERVER,
+            Eventine
+        }
+    }
+}

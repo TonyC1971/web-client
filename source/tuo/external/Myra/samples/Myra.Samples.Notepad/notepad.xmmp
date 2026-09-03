@@ -1,0 +1,29 @@
+<Project>
+  <Project.ExportOptions Namespace="Myra.Samples.Notepad" Class="Notepad" OutputPath="D:\Projects\Myra\samples\Myra.Samples.Notepad" />
+  <VerticalStackPanel>
+    <VerticalStackPanel.Proportions>
+      <Proportion Type="Auto" />
+      <Proportion Type="Auto" />
+      <Proportion Type="Fill" />
+    </VerticalStackPanel.Proportions>
+    <HorizontalMenu VerticalAlignment="Stretch" Id="_mainMenu">
+      <MenuItem Text="&amp;File" Id="menuItemFile">
+        <MenuItem Text="&amp;New" ShortcutText="Ctrl+N" Id="menuItemNew" />
+        <MenuItem Text="&amp;Open..." ShortcutText="Ctrl+O" Id="menuItemOpen" />
+        <MenuItem Text="&amp;Save" ShortcutText="Ctrl+S" Id="menuItemSave" />
+        <MenuItem Text="Save &amp;As..." Id="menuItemSaveAs" />
+        <MenuSeparator />
+        <MenuItem Text="Debug Options" Id="menuItemDebugOptions" />
+        <MenuSeparator />
+        <MenuItem Text="&amp;Quit" ShortcutText="Ctrl+Q" Id="menuItemQuit" />
+      </MenuItem>
+      <MenuItem Text="&amp;Help" Id="menuItemHelp">
+        <MenuItem Text="About" Id="menuItemAbout" />
+      </MenuItem>
+    </HorizontalMenu>
+    <HorizontalSeparator />
+    <ScrollViewer>
+      <TextBox Multiline="True" Wrap="True" VerticalAlignment="Stretch" Id="textArea" />
+    </ScrollViewer>
+  </VerticalStackPanel>
+</Project>

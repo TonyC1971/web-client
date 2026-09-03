@@ -1,0 +1,528 @@
+﻿// SPDX-License-Identifier: BSD-2-Clause
+
+
+using ClassicUO.Assets;
+using ClassicUO.Configuration;
+using ClassicUO.Game.Managers;
+using ClassicUO.Game.UI.Controls;
+using ClassicUO.Input;
+using ClassicUO.Network;
+using ClassicUO.Resources;
+using ClassicUO.Utility;
+using ClassicUO.Utility.Logging;
+using Microsoft.Xna.Framework;
+using System.Collections.Generic;
+using ClassicUO.Game.UI.Gumps.SpellBar;
+using ClassicUO.Game.UI.MyraWindows;
+
+namespace ClassicUO.Game.UI.Gumps
+{
+    public class TopBarGump : Gump
+    {
+        private RighClickableButton XmlGumps;
+
+        private TopBarGump(World world) : base(world, 0, 0)
+        {
+            CanMove = true;
+            AcceptMouseInput = true;
+            CanCloseWithRightClick = false;
+
+            // little
+            Add(new ResizePic(0x13BE) { Width = 30, Height = 27 }, 2);
+
+            Add(
+                new Button(0, 0x15A1, 0x15A1, 0x15A1)
+                {
+                    X = 5,
+                    Y = 3,
+                    ToPage = 1
+                },
+                2
+            );
+
+            // big
+            int smallWidth = 50;
+            ref readonly Renderer.SpriteInfo gumpInfo = ref Client.Game.UO.Gumps.GetGump(0x098B);
+            if (gumpInfo.Texture != null)
+            {
+                smallWidth = gumpInfo.UV.Width;
+            }
+
+            int largeWidth = 100;
+
+            gumpInfo = ref Client.Game.UO.Gumps.GetGump(0x098D);
+            if (gumpInfo.Texture != null)
+            {
+                largeWidth = gumpInfo.UV.Width;
+            }
+
+            int[][] textTable =
+            {
+                new[] { 1, (int) Buttons.Paperdoll },
+                new[] { 1, (int) Buttons.Inventory },
+                new[] { 1, (int) Buttons.Journal },
+                new[] { 0, (int) Buttons.Chat },
+                new[] { 1, (int) Buttons.WorldMap },
+                new[] { 1, (int) Buttons.UOStore },
+            };
+
+            ClilocLoader cliloc = Client.Game.UO.FileManager.Clilocs;
+
+            string[] texts =
+            {
+                cliloc.GetString(3000133, ResGumps.Paperdoll),
+                cliloc.GetString(3000431, ResGumps.Inventory),
+                cliloc.GetString(3000129, ResGumps.Journal),
+                cliloc.GetString(3000131, ResGumps.Chat),
+                StringHelper.CapitalizeAllWords(cliloc.GetString(1015233, ResGumps.WorldMap)),
+                cliloc.GetString(1158008, ResGumps.UOStore),
+            };
+
+#if BROWSER_WASM
+            // Hide the "UO Store" button on the web client (operator request
+            // 2026-06-04): there is no OSI UO Store on these fan-made shards,
+            // so the button only opens a dead store request. false => the loop
+            // below breaks before adding it (UOStore is the last entry).
+            bool hasUOStore = false;
+#else
+            bool hasUOStore = Client.Game.UO.Version >= ClientVersion.CV_706400;
+#endif
+
+            ResizePic background;
+
+            Add(background = new ResizePic(0x13BE) { Height = 27 }, 1);
+
+            Add(
+                new Button(0, 0x15A4, 0x15A4, 0x15A4)
+                {
+                    X = 5,
+                    Y = 3,
+                    ToPage = 2
+                },
+                1
+            );
+
+            int startX = 30;
+
+            for (int i = 0; i < textTable.Length; i++)
+            {
+                // Skip the UO Store entry on web. NOTE: compare the BUTTON ID at this
+                // row (textTable[i][1]) against Buttons.UOStore — NOT the loop index vs
+                // the enum value. The v5.3.62 sync inserted Help/Info/Debug/NetStats into
+                // the Buttons enum, so (int)Buttons.UOStore became 9 while UOStore sits at
+                // textTable index 5 → the old `i >= (int)Buttons.UOStore` never fired and
+                // the button came back (operator 2026-07-23). continue (not break) so it
+                // is robust to future reordering.
+                if (!hasUOStore && textTable[i][1] == (int)Buttons.UOStore)
+                {
+                    continue;
+                }
+
+                ushort graphic = (ushort)(textTable[i][0] != 0 ? 0x098D : 0x098B);
+
+                Add(
+                    new RighClickableButton(
+                        textTable[i][1],
+                        graphic,
+                        graphic,
+                        graphic,
+                        texts[i],
+                        1,
+                        true,
+                        0,
+                        0x0036
+                    )
+                    {
+                        ButtonAction = ButtonAction.Activate,
+                        X = startX,
+                        Y = 1,
+                        FontCenter = true
+                    },
+                    1
+                );
+
+                startX += (textTable[i][0] != 0 ? largeWidth : smallWidth) + 1;
+                background.Width = startX;
+            }
+
+            RighClickableButton assistant;
+            Add(assistant = new(998877,
+                0x098D,
+                0x098D,
+                0x098D,
+                TazLang.Get("topbargump_assistant", "Assistant"),
+                1,
+                true,
+                0,
+                0x0036
+            )
+            {
+                ButtonAction = ButtonAction.Activate,
+                X = startX,
+                Y = 1,
+                FontCenter = true
+            }, 1);
+            assistant.MouseUp += (s, e) =>
+            {
+                AssistantWindow.Show();
+            };
+            startX += largeWidth + 1;
+
+#if !BROWSER_WASM
+            // LegionScript (IronPython) is excluded from the WASM build — IronPython
+            // needs runtime IL generation (DLR/Reflection.Emit) that the AOT WASM
+            // runtime can't provide, so ScriptManagerWindow.Show() is a no-op stub
+            // there. Hide the button entirely on web so it isn't a dead affordance.
+            RighClickableButton lscript;
+            Add(lscript = new(998877,
+                0x098D,
+                0x098D,
+                0x098D,
+                TazLang.Get("topbargump_legionscript", "Legion Script"),
+                1,
+                true,
+                0,
+                0x0036
+            )
+            {
+                ButtonAction = ButtonAction.Activate,
+                X = startX,
+                Y = 1,
+                FontCenter = true
+            }, 1);
+            lscript.MouseUp += (s, e) => {
+                MyraWindows.ScriptManagerWindow.Show();
+            };
+            startX += largeWidth + 1;
+#endif
+
+            RighClickableButton moreMenu;
+            Add
+            (moreMenu =
+                new RighClickableButton
+                (
+                    998877,
+                    0x098D,
+                    0x098D,
+                    0x098D,
+                    TazLang.Get("topbargump_more", "More +"),
+                    1,
+                    true,
+                    0,
+                    0x0036
+                )
+                {
+                    ButtonAction = ButtonAction.Activate,
+                    X = startX,
+                    Y = 1,
+                    FontCenter = true
+                },
+                1
+            );
+            moreMenu.ContextMenu = new ContextMenuControl(this);
+            moreMenu.MouseUp += (s, e) => { moreMenu.ContextMenu?.Show(); };
+            //moreMenu.ContextMenu.Add(new ContextMenuItemEntry("TazUO Chat", () => { MyraWindows.TazUOChatWindow.Show(); }));
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_commandsentry"), () =>
+            {
+                UIManager.Add(new CommandsGump(world));
+            }));
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(cliloc.GetString(1079449, ResGumps.Info), () =>
+            {
+                if (World.TargetManager.IsTargeting)
+                {
+                    World.TargetManager.CancelTarget();
+                }
+
+                World.TargetManager.SetTargeting(CursorTarget.SetTargetClientSide, CursorType.Target, TargetType.Neutral);
+            }));
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(cliloc.GetString(1042237, ResGumps.Debug), () =>
+            {
+                DebugGump debugGump = UIManager.GetGump<DebugGump>();
+
+                if (debugGump == null)
+                {
+                    debugGump = new DebugGump(World, 100, 100);
+                    UIManager.Add(debugGump);
+                }
+                else
+                {
+                    debugGump.IsVisible = !debugGump.IsVisible;
+                    debugGump.SetInScreen();
+                }
+            }));
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(cliloc.GetString(3000169, ResGumps.NetStats), () =>
+            {
+                NetworkStatsGump netstatsgump = UIManager.GetGump<NetworkStatsGump>();
+
+                if (netstatsgump == null)
+                {
+                    netstatsgump = new NetworkStatsGump(World, 100, 100);
+                    UIManager.Add(netstatsgump);
+                }
+                else
+                {
+                    netstatsgump.IsVisible = !netstatsgump.IsVisible;
+                    netstatsgump.SetInScreen();
+                }
+            }));
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(cliloc.GetString(3000134, ResGumps.Help), () => { GameActions.RequestHelp(); }));
+
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_togglenameplates", "Toggle nameplates"), () => { World.NameOverHeadManager.ToggleOverheads(); }));
+
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_radarmap", "Radar Map"), () => { GameActions.OpenMiniMap(World); }));
+
+#if !BROWSER_WASM
+            // v5.3 sync: the Polls window talks to the TazUO Firebase and renders
+            // remote attachment images — both blocked by our CSP and out of scope
+            // for the web build. Entry hidden (same treatment as the web-map ones).
+            moreMenu.ContextMenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_polls", "Polls"), MyraWindows.PollsWindow.Show));
+#endif
+
+            var submenu = new ContextMenuItemEntry(TazLang.Get("topbargump_tools", "Tools"));
+            submenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_spellquickcast", "Spell quick cast"), () => { UIManager.Add(new SpellQuickSearch(World, 200, 200, (sp) => {if (sp != null) GameActions.CastSpell(sp.ID);})); }));
+            submenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_openboatcontrol", "Open boat control"), () => { UIManager.Add(new BoatControl(World) { X = 200, Y = 200 }); }));
+            submenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_nearbyloot", "Nearby loot"), () => { UIManager.Add(new NearbyLootGump(World)); }));
+            submenu.Add(new ContextMenuItemEntry(TazLang.Get("healthbarcollector_title", "Healthbar Collector"), () => { UIManager.Add(new HealthbarCollectorGump(World) { X = 100, Y = 100 }); }));
+            submenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_retrievegumps", "Retrieve gumps"), () =>
+            {
+                for (LinkedListNode<IGui> last = UIManager.Gumps.Last; last != null; last = last.Previous)
+                {
+                    IGui c = last.Value;
+
+                    if (c.IsDisposed)
+                        continue;
+
+                    switch (c)
+                    {
+                        case Gump g:
+                            g.SetInScreen();
+                            break;
+                        case MyraControl m:
+                            m.SetInScreen();
+                            break;
+                    }
+                }
+            }));
+            moreMenu.ContextMenu.Add(submenu);
+
+            var devSubmenu = new ContextMenuItemEntry(TazLang.Get("topbargump_developer", "Developer"));
+            devSubmenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_tinkerer", "Tinkerer"), TinkererWindow.Show));
+            devSubmenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_profiler", "Profiler"), MyraWindows.ProfilerWindow.Show));
+            devSubmenu.Add(new ContextMenuItemEntry(TazLang.Get("topbargump_loghistory", "Log History"), MyraWindows.LogHistoryWindow.Show));
+            moreMenu.ContextMenu.Add(devSubmenu);
+
+            startX += largeWidth + 1;
+
+            string[] xmls = XmlGumpHandler.GetAllXmlGumps();
+            if (xmls.Length > 0)
+            {
+                Add
+                (XmlGumps =
+                    new RighClickableButton
+                    (
+                        998877,
+                        0x098D,
+                        0x098D,
+                        0x098D,
+                        TazLang.Get("topbargump_xmlgumps", "Xml Gumps"),
+                        1,
+                        true,
+                        0,
+                        0x0036
+                    )
+                    {
+                        ButtonAction = ButtonAction.Activate,
+                        X = startX,
+                        Y = 1,
+                        FontCenter = true
+                    },
+                    1
+                );
+
+                XmlGumps.MouseUp += (s, e) => { XmlGumps.ContextMenu?.Show(); };
+
+                RefreshXmlGumps();
+
+                startX += largeWidth + 1;
+            }
+
+            background.Width = startX + 1;
+
+            //layer
+            LayerOrder = UILayer.Over;
+        }
+
+        public bool IsMinimized { get; private set; }
+
+        public void RefreshXmlGumps()
+        {
+            XmlGumps.ContextMenu?.Dispose();
+            if (XmlGumps.ContextMenu == null)
+            {
+                XmlGumps.ContextMenu = new ContextMenuControl(this);
+            }
+
+            string[] xmls = XmlGumpHandler.GetAllXmlGumps();
+
+            ContextMenuItemEntry ci = null;
+            foreach (string xml in xmls)
+            {
+                XmlGumps.ContextMenu.Add(ci = new ContextMenuItemEntry(xml, () =>
+                {
+                    if (Keyboard.Ctrl)
+                    {
+                        if (ProfileManager.CurrentProfile.AutoOpenXmlGumps.Contains(xml))
+                        {
+                            ProfileManager.CurrentProfile.AutoOpenXmlGumps.Remove(xml);
+                        }
+                        else
+                        {
+                            ProfileManager.CurrentProfile.AutoOpenXmlGumps.Add(xml);
+                        }
+                    }
+                    else
+                    {
+                        UIManager.Add(XmlGumpHandler.CreateGumpFromFile(World, System.IO.Path.Combine(XmlGumpHandler.XmlGumpPath, xml + ".xml")));
+                    }
+                    RefreshXmlGumps();
+                }, false, ProfileManager.CurrentProfile.AutoOpenXmlGumps.Contains(xml)));
+            }
+
+            var reload = new ContextMenuItemEntry(TazLang.Get("topbargump_reload", "Reload"), RefreshXmlGumps);
+            XmlGumps.ContextMenu.Add(reload);
+        }
+
+        public static void Create(World world)
+        {
+            TopBarGump gump = UIManager.GetGump<TopBarGump>();
+
+            if (gump == null)
+            {
+                if (
+                    ProfileManager.CurrentProfile.TopbarGumpPosition.X < 0
+                    || ProfileManager.CurrentProfile.TopbarGumpPosition.Y < 0
+                )
+                {
+                    ProfileManager.CurrentProfile.TopbarGumpPosition = Point.Zero;
+                }
+
+                UIManager.Add(
+                    gump = new TopBarGump(world)
+                    {
+                        X = ProfileManager.CurrentProfile.TopbarGumpPosition.X,
+                        Y = ProfileManager.CurrentProfile.TopbarGumpPosition.Y
+                    }
+                );
+
+                if (ProfileManager.CurrentProfile.TopbarGumpIsMinimized)
+                {
+                    gump.ChangePage(2);
+                }
+            }
+            else
+            {
+                Log.Error(ResGumps.TopBarGumpAlreadyExists);
+            }
+        }
+
+        public override void OnMouseUp(int x, int y, MouseButtonType button)
+        {
+            if (button == MouseButtonType.Right && (X != 0 || Y != 0))
+            {
+                X = 0;
+                Y = 0;
+
+                ProfileManager.CurrentProfile.TopbarGumpPosition = Location;
+            }
+        }
+
+        public override void OnPageChanged()
+        {
+            ProfileManager.CurrentProfile.TopbarGumpIsMinimized = IsMinimized = ActivePage == 2;
+            WantUpdateSize = true;
+        }
+
+        protected override void OnDragEnd(int x, int y)
+        {
+            base.OnDragEnd(x, y);
+            ProfileManager.CurrentProfile.TopbarGumpPosition = Location;
+        }
+
+        public override void OnButtonClick(int buttonID)
+        {
+            switch ((Buttons)buttonID)
+            {
+                case Buttons.Paperdoll:
+                    GameActions.OpenPaperdoll(World, World.Player);
+
+                    break;
+
+                case Buttons.Inventory:
+                    GameActions.OpenBackpack(World);
+
+                    break;
+
+                case Buttons.Journal:
+                    GameActions.OpenJournal(World);
+
+                    break;
+
+                case Buttons.Chat:
+                    GameActions.OpenChat(World);
+
+                    break;
+
+                case Buttons.UOStore:
+                    if (Client.Game.UO.Version >= ClientVersion.CV_706400)
+                    {
+                        AsyncNetClient.Socket.Send_OpenUOStore();
+                    }
+
+                    break;
+
+                case Buttons.WorldMap:
+                    GameActions.OpenWorldMap(World);
+
+                    break;
+            }
+        }
+
+        private enum Buttons
+        {
+            Paperdoll,
+            Inventory,
+            Journal,
+            Chat,
+            Help,
+            WorldMap,
+            Info,
+            Debug,
+            NetStats,
+            UOStore,
+        }
+
+        private class RighClickableButton : Button
+        {
+            public RighClickableButton(
+                int buttonID,
+                ushort normal,
+                ushort pressed,
+                ushort over = 0,
+                string caption = "",
+                byte font = 0,
+                bool isunicode = true,
+                ushort normalHue = ushort.MaxValue,
+                ushort hoverHue = ushort.MaxValue
+            ) : base(buttonID, normal, pressed, over, caption, font, isunicode, normalHue, hoverHue)
+            { }
+
+            public RighClickableButton(List<string> parts) : base(parts) { }
+
+            public override void OnMouseUp(int x, int y, MouseButtonType button)
+            {
+                base.OnMouseUp(x, y, button);
+                Parent?.InvokeMouseUp(new Point(x, y), button);
+            }
+        }
+    }
+}

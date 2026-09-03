@@ -1,0 +1,42 @@
+<Project>
+  <Project.ExportOptions Namespace="Myra.Samples.DebugConsole" Class="GamePanel" OutputPath="D:\Projects\Myra\samples\Myra.Samples.DebugConsole" />
+  <Panel>
+    <Label Text="Game Screen" Top="100" HorizontalAlignment="Center" />
+    <HorizontalStackPanel Top="50">
+      <RadioButton>
+        <Label Text="Radio 1" />
+      </RadioButton>
+      <RadioButton>
+        <Label Text="Radio 2" />
+      </RadioButton>
+      <RadioButton>
+        <Label Text="Radio 3" />
+      </RadioButton>
+      <RadioButton>
+        <Label Text="Radio 4" />
+      </RadioButton>
+    </HorizontalStackPanel>
+    <HorizontalStackPanel Spacing="8" Top="300">
+      <Button>
+        <Label Text="Button 1" />
+      </Button>
+      <Button>
+        <Label Text="Button 2" />
+      </Button>
+      <Button>
+        <Label Text="Button 3" />
+      </Button>
+      <Button>
+        <Label Text="Button 4" />
+      </Button>
+    </HorizontalStackPanel>
+    <HorizontalStackPanel Spacing="8" VerticalAlignment="Bottom">
+      <Button Id="_buttonDebugPanel">
+        <Label Text="Show Debug Panel" />
+      </Button>
+      <Button Id="_buttonModalDebugPanel">
+        <Label Text="Show Debug Panel Modal" />
+      </Button>
+    </HorizontalStackPanel>
+  </Panel>
+</Project>

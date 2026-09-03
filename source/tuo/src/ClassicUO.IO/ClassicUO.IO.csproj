@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- v0.7.9: propagate BROWSER_WASM. Mirrors source/cuo/. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClassicUO.Utility\ClassicUO.Utility.csproj" />
+    <ProjectReference Include="..\..\external\FNA\FNA.Core.csproj" />
+    <ProjectReference Include="..\..\external\MP3Sharp\MP3Sharp\MP3Sharp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <!--<ItemGroup>
+    <PackageReference Include="MP3Sharp" Version="1.0.5" />
+  </ItemGroup>-->
+
+</Project>

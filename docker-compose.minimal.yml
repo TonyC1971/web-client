@@ -1,0 +1,172 @@
+# uonexus-minimal — the whole self-hosted stack: a proxy and an nginx.
+#
+#   1. copy .env.example to .env and set UO_HOST / UO_PORT / GAMEFILES_ROOT / JWT_SECRET
+#   2. put your converted game files under ${GAMEFILES_ROOT}
+#   3. build the client bundle(s) this file serves — the repo ships SOURCE, never `client/`:
+#        CLIENT_NAME=cuo ./server/scripts/build.sh prod   &&  node server/scripts/build-minimal-bundle.mjs cuo
+#        CLIENT_NAME=tuo ./server/scripts/build.sh prod   &&  node server/scripts/build-minimal-bundle.mjs tuo   # optional
+#   4. edit client/minimal/config.json so `slug` matches the shard you are pointing at
+#   5. docker compose -f docker-compose.minimal.yml up -d
+#
+# Pre-compressing your game files (`server/scripts/precompress-gamefiles.mjs`, or just let the
+# asset-worker do it) is a large BANDWIDTH win, not a requirement: the loader asks for each file by
+# name and brotli_static falls back to the raw file when no twin exists. This header used to claim
+# every asset 404s without them — measured 2026-08-19 and false.
+
+services:
+
+  proxy:
+    build:
+      context: ./server
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    # 🚨 NAMED, BECAUSE THE WORKER BELOW REUSES THIS IMAGE. Without an `image:` key compose tags a
+    # built image `<project>-<service>`, so the tag the worker asked for existed on no fresh machine
+    # and `docker compose up` failed trying to PULL it from the registry. It worked here only
+    # because our own production stack happens to build a tag by that name — the worst kind of
+    # dependency, invisible to the person who has it and fatal to everyone else.
+    image: uonexus-minimal-proxy:latest
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    # 🚨 The REDUCED entrypoint, overriding the image's CMD rather than changing it. The Dockerfile
+    # is shared with the full build, and editing its CMD would change what production starts — the
+    # override keeps that decision here, where the minimal stack is defined.
+    command: ["npm", "run", "start:minimal"]
+    expose:
+      - "3000"
+    volumes:
+      - "${GAMEFILES_ROOT:-./gamefiles}:/gamefiles-root:rw"
+      - "${GAMEFILES_ROOT:-./gamefiles}/${SHARD_SLUG:-myshard}:/gamefiles:ro"
+      - ./data:/app/data
+      # 🚨 READ-ONLY, and only so the backend can REFUSE a setting that would break the site.
+      # The admin panel can grey out a client that is not installed, but that is the browser
+      # deciding: the PUT can be sent directly. The process that validates the setting has to
+      # be able to see the bundles, and they were mounted only into nginx.
+      - ./client/minimal:/srv/client/cuo:ro
+      - ./client/minimal-tuo:/srv/client/tuo:ro
+      - ./servers:/app/servers:ro
+    environment:
+      # NOT defaulted to host.docker.internal: that silently exposes the host's whole network as
+      # an SSRF target. Set it explicitly to your own UO server.
+      UO_HOST: ${UO_HOST:-}
+      UO_PORT: ${UO_PORT:-2593}
+      ASSETS_PATH: /gamefiles
+      # Where the proxy looks for the built client bundles, so it can REFUSE to point the
+      # install at a client that was never compiled. Matches the read-only mounts above; a
+      # layout that puts them elsewhere overrides this rather than losing the check.
+      CLIENT_ROOT: ${CLIENT_ROOT:-/srv/client}
+      GAMEFILES_ROOT: /gamefiles-root
+      PORT: 3000
+      SERVER_NAME: ${SERVER_NAME:-My UO Shard}
+      # Discord is OPTIONAL. Left empty, /auth/* answers 503 and the client stays fully playable
+      # as a guest — settings then persist in the browser instead of across devices.
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI:-http://localhost:8080/auth/discord/callback}
+      # Community invite for the landing page's Discord icon. Unrelated to sign-in: just a link.
+      # Empty removes the icon rather than leaving the dead `href="#"` placeholder the markup ships.
+      DISCORD_INVITE_URL: ${DISCORD_INVITE_URL:-}
+      # 🚨 Change this. It signs session tokens; the default is a placeholder, not a secret.
+      JWT_SECRET: ${JWT_SECRET:-change-me-generate-a-real-secret}
+      # 🚨 WHO MAY OPEN /admin. Discord ids, comma-separated. Empty means NOBODY, and the panel then
+      # 404s to everyone including you — which is how it shipped: the server read this variable and
+      # nothing passed it in, so an admin panel existed that no install could ever reach.
+      ADMIN_SUBS: ${ADMIN_SUBS:-}
+      # Bump this to force every browser to re-fetch the client after you replace game files. It
+      # defaults to 1, so leaving it alone is correct until you need that.
+      CLIENT_EPOCH: ${CLIENT_EPOCH:-1}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      NODE_ENV: ${NODE_ENV:-production}
+      DOCKER: "1"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--tries=1", "http://127.0.0.1:3000/api/config"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ── asset worker ───────────────────────────────────────────────────────────
+  # Keeps the game files you drop in servable: bakes the WorldMap cache the client asks for by name,
+  # and writes the brotli twins nginx prefers. Same image as the proxy, different command.
+  #
+  # 🚨 The map cache is NOT cosmetic. The client's WorldMapGump requests
+  # MapsCache/map<N>_sz_<mapBytes>_<staticBytes>.png, a name it derives from YOUR files' sizes.
+  # Nothing else produces it, and without it the world map never appears — with no error.
+  #
+  # It writes into the gamefiles tree, so this is the one service that mounts it read-write.
+  asset-worker:
+    # 🚨 THE SAME IMAGE THE PROXY BUILDS, BY THE NAME THIS PROJECT GIVES IT. `uonexus-proxy:latest`
+    # is a generic tag: on any machine that also runs the full UO Nexus stack — ours, for one —
+    # `docker compose build` here OVERWRITES the image production is running, and the damage only
+    # appears the next time a production container is recreated. Naming the images after the project
+    # that builds them is what keeps `docker compose build` a local act.
+    image: uonexus-minimal-proxy:latest
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["node", "scripts/minimal-asset-worker.mjs"]
+    volumes:
+      - "${GAMEFILES_ROOT:-./gamefiles}:/gamefiles-root:rw"
+    environment:
+      GAMEFILES_ROOT: /gamefiles-root
+      SHARD_SLUG: ${SHARD_SLUG:-myshard}
+      WORKER_INTERVAL_SECS: ${WORKER_INTERVAL_SECS:-120}
+      BROTLI_QUALITY: ${BROTLI_QUALITY:-9}
+    restart: unless-stopped
+    # 🚨 DISABLE THE INHERITED HEALTHCHECK. The image is the proxy's, and its HEALTHCHECK probes
+    # http://127.0.0.1:3000/api/config. A worker serves no HTTP, so it fails that probe forever and
+    # sits permanently `unhealthy` — which is how the operator found it: two red dots on the NAS
+    # dashboard for containers that were working perfectly. A health signal that is wrong by
+    # construction is worse than none: it trains you to ignore the one that matters.
+    healthcheck:
+      disable: true
+    # ⚠️ NO `cpus:` KEY. This NAS kernel has no CPU CFS quota support and docker REFUSES to create
+    # the container ("NanoCPUs can not be set"), so the stack fails to come up rather than running
+    # uncapped. The full deployment's compose documents the same limit in a COMMENT for exactly this
+    # reason — measured: its asset-worker runs with NanoCpus=0. Memory IS enforceable and is set.
+    mem_limit: 1g
+
+  # Custom nginx image: the stock one has no brotli_static, and serving the pre-compressed game
+  # files is a hard requirement rather than an optimisation.
+  nginx:
+    build:
+      context: ./server/deploy
+      dockerfile: nginx.Dockerfile
+    image: uonexus-minimal-nginx:latest
+    ports:
+      - "${PORT:-8080}:80"
+    volumes:
+      - ./client/minimal:/usr/share/nginx/html:ro
+      # 🚨 The SECOND client, and nginx already had a /tuo/ block pointing here while nothing
+      # mounted it — the same shape as the gamefiles bug: two files agreeing on a path, and no third
+      # one providing it. Build it with `build-minimal-bundle.mjs tuo`; skip that and this mounts an
+      # empty directory, which the /tuo/ block answers with 404 rather than anything broken.
+      - ./client/minimal-tuo:/usr/share/nginx/html-tuo:ro
+      - ./server/deploy/nginx.minimal.conf:/etc/nginx/conf.d/default.conf:ro
+      # 🚨 nginx serves the game files itself, straight off disk with brotli_static, so it needs them
+      # mounted. Without this line the /gamefiles/ block resolves nothing and every asset 404s — and
+      # the client shows an endless loading screen rather than an error, which reads as a broken
+      # build instead of a missing mount. Same path the proxy sees, read-only: nginx never writes.
+      - "${GAMEFILES_ROOT:-./gamefiles}/${SHARD_SLUG:-myshard}:/gamefiles:ro"
+    depends_on:
+      proxy:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+      - /var/log/nginx
+      - /var/lib/nginx/logs
+      - /var/lib/nginx/tmp
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, CHOWN, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m

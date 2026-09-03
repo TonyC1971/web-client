@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- v0.7.9: propagate BROWSER_WASM. Mirrors source/cuo/. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="gumpartassets\*.png" />
+    <None Remove="fonts\*.ttf" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="gumpartassets\*.png" />
+    <EmbeddedResource Include="fonts\*.ttf" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\external\FontStashSharp\src\XNA\FontStashSharp.FNA.Core.csproj" />
+    <ProjectReference Include="..\ClassicUO.IO\ClassicUO.IO.csproj" />
+    <ProjectReference Include="..\ClassicUO.Utility\ClassicUO.Utility.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="SixLabors.Fonts" Version="2.1.3" />
+  </ItemGroup>
+
+</Project>

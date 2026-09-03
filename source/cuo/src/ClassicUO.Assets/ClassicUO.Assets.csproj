@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- v0.3.35: propagate BROWSER_WASM so #if BROWSER_WASM blocks in
+       SoundsLoader.cs (Config.txt try-catch widening, [music-config]
+       diagnostic, GetTrueFileName desktop short-circuit) compile in
+       when classicuo-wasm publishes with -p:IsBrowserWasm=true.
+       Same pattern as ClassicUO.Renderer / ClassicUO.IO / ClassicUO.Utility /
+       ClassicUO.Client. Pre-fix, all #if BROWSER_WASM additions to the
+       Assets project were silently stripped → v0.3.32/33/34 music fixes
+       never landed in the deployed wasm bundle. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true'">
+    <DefineConstants>$(DefineConstants);BROWSER_WASM</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClassicUO.IO\ClassicUO.IO.csproj" />
+    <ProjectReference Include="..\ClassicUO.Utility\ClassicUO.Utility.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ClassicUO.UnitTests" />
+  </ItemGroup>
+
+</Project>

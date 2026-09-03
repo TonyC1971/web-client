@@ -1,0 +1,2071 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using ClassicUO.IO;
+using ClassicUO.Utility;
+using ClassicUO.Utility.Logging;
+using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+namespace ClassicUO.Assets
+{
+    public static class CustomServerSettings
+    {
+        public static bool HasCustomAnimPath { get; private set; }
+
+        /// <summary>
+        /// Expects .mul and .idx anim files to be in the same location. This should return a path, not the final file.
+        /// It will add anim#.mul and anim#.idx to this path.
+        /// </summary>
+        public static Func<string> GetCustomAnimPath
+        {
+            get;
+            set
+            {
+                field = value;
+                HasCustomAnimPath = true;
+            }
+        }
+    }
+
+    public unsafe sealed class AnimationsLoader : UOFileLoader
+    {
+        public const int MAX_ACTIONS = 80; // gargoyle is like 78
+        public const int MAX_DIRECTIONS = 5;
+
+
+        [ThreadStatic]
+        private static FrameInfo[] _frames;
+
+        private readonly UOFileMul[] _files = new UOFileMul[10];
+        private readonly UOFileUop[] _filesUop = new UOFileUop[10];
+
+        // ── Background-deferred giant anim files (big-file legacy shards) ──
+        // On RunUO 2.x shards like Ultima Memento the loader UI (main.js) does
+        // NOT boot-block on anim2-5.mul (340-520 MB each); it streams them into
+        // /uo AFTER world-entry. At boot those .mul are absent while their tiny
+        // .idx are present (the .idx stay boot-blocking). _pendingDeferred holds
+        // the file indices still awaiting their .mul bytes; PollDeferredFiles()
+        // opens each one the instant File.Exists flips true and bumps
+        // _filesGeneration so the renderer's Animations cache can drop the
+        // negative-cached (naked/missing) bodies and re-resolve them. Once every
+        // pending file has landed the poll nulls itself out → zero steady cost.
+        private int[] _pendingDeferred;
+        private long _lastDeferredPollMs;
+        private int _filesGeneration;
+        private readonly object _deferredPollLock = new object();
+
+        // Bumped each time a previously-absent anim{N}.mul is opened post-boot
+        // (a background-streamed giant file just landed). The renderer watches
+        // this to invalidate bodies that rendered naked while the file was still
+        // downloading. See Renderer/Animations/Animation.cs GetAnimationFrames.
+        public int FilesGeneration => System.Threading.Volatile.Read(ref _filesGeneration);
+
+        private readonly Dictionary<ushort, Dictionary<ushort, EquipConvData>> _equipConv = new Dictionary<ushort, Dictionary<ushort, EquipConvData>>();
+        private readonly Dictionary<int, MobTypeInfo> _mobTypes = new Dictionary<int, MobTypeInfo>();
+        private readonly Dictionary<int, BodyInfo> _bodyInfos = new Dictionary<int, BodyInfo>();
+        private readonly Dictionary<int, BodyInfo> _corpseInfos = new Dictionary<int, BodyInfo>();
+        private readonly Dictionary<int, BodyConvInfo> _bodyConvInfos = new Dictionary<int, BodyConvInfo>();
+        private readonly Dictionary<int, UopInfo> _uopInfos = new Dictionary<int, UopInfo>();
+
+
+        public AnimationsLoader(UOFileManager fileManager) : base(fileManager)
+        {
+
+        }
+
+        public IReadOnlyDictionary<ushort, Dictionary<ushort, EquipConvData>> EquipConversions => _equipConv;
+
+        public List<(ushort, byte)>[] GroupReplaces { get; } =
+            new List<(ushort, byte)>[2]
+            {
+                new List<(ushort, byte)>(),
+                new List<(ushort, byte)>()
+            };
+
+
+        // Opens the anim{N}.mul/.idx pair for the given file index if both
+        // files are present in the VFS, otherwise returns null. Path logic
+        // mirrors Load()'s LoadAnimFromUOPath so a deferred (background-
+        // streamed) .mul resolves to the exact same /uo path it would have
+        // at boot. Used both at Load() time and lazily by EnsureMulFile.
+        private UOFileMul TryOpenAnimFile(int i)
+        {
+            string suffix = (i == 0 ? string.Empty : (i + 1).ToString());
+            string pathmul = null, pathidx = null;
+
+            if (CustomServerSettings.HasCustomAnimPath)
+            {
+                string loc = CustomServerSettings.GetCustomAnimPath();
+                string cmul = Path.Combine(loc, "anim" + suffix + ".mul");
+                string cidx = Path.Combine(loc, "anim" + suffix + ".idx");
+                if (File.Exists(cmul) && File.Exists(cidx))
+                {
+                    pathmul = cmul;
+                    pathidx = cidx;
+                }
+            }
+
+            if (pathmul == null)
+            {
+                pathmul = FileManager.GetUOFilePath("anim" + suffix + ".mul");
+                pathidx = FileManager.GetUOFilePath("anim" + suffix + ".idx");
+            }
+
+            if (File.Exists(pathmul) && File.Exists(pathidx))
+                return new UOFileMul(pathmul, pathidx);
+
+            return null;
+        }
+
+        // Returns the open UOFileMul for fileIndex, lazily opening it if it
+        // was not present at Load() time. The WASM loader boot-blocks only
+        // on anim.mul + the small .idx files; the giant anim2-5.mul are
+        // streamed into /uo AFTER the world loads (background defer), so on
+        // big-file shards (RunUO 2.x like Ultima Memento) _files[1..4] start
+        // null and get opened on demand here once the bytes land — matching
+        // the native client's memory-map-on-demand semantics. Returns null
+        // while the file is still downloading; callers degrade to empty
+        // frames (those bodies pop in once the .mul arrives) instead of NPE.
+        private UOFileMul EnsureMulFile(int fileIndex)
+        {
+            if (fileIndex < 0 || fileIndex >= _files.Length)
+                return null;
+
+            UOFileMul f = _files[fileIndex];
+            if (f != null)
+                return f;
+
+            // v0.8.15 INSTRUMENTATION: time the .mul open (UOFileMul maps/reads the
+            // file header+index). This fires once per deferred file the instant its
+            // bytes land — it runs on the deputy and could be part of the streaming
+            // spike, so we attribute it separately from the JS write and the C# reclear.
+            var _swOpen = System.Diagnostics.Stopwatch.StartNew();
+            f = TryOpenAnimFile(fileIndex);
+            if (f != null)
+            {
+                _files[fileIndex] = f;
+                // A previously-absent anim file just opened post-boot (a deferred
+                // giant .mul finished streaming). Signal the renderer so it can
+                // re-resolve bodies that rendered naked while it was downloading.
+                System.Threading.Interlocked.Increment(ref _filesGeneration);
+                Log.Trace($"[anim-defer] opened anim idx={fileIndex} post-boot (gen now {_filesGeneration}) in {_swOpen.Elapsed.TotalMilliseconds:F1}ms");
+            }
+
+            return f;
+        }
+
+        // Opens any background-deferred anim{N}.mul whose bytes have now landed
+        // in /uo. Throttled + lock-guarded so it is safe to call every frame
+        // from the renderer; nulls _pendingDeferred (→ zero cost) once all the
+        // deferred files are open. This is the trigger that breaks the negative-
+        // cache chicken-and-egg: a body cached as "no frames" while its .mul was
+        // still streaming would otherwise never re-touch EnsureMulFile, so the
+        // file would never get opened from the render path. Polling here is
+        // independent of any body, so the file opens (and the generation bumps)
+        // regardless of what is on screen.
+        public void PollDeferredFiles()
+        {
+            int[] pend = _pendingDeferred;
+            if (pend == null)
+                return;
+
+            long now = Environment.TickCount64;
+            if (now - _lastDeferredPollMs < 250)
+                return;
+
+            lock (_deferredPollLock)
+            {
+                pend = _pendingDeferred;
+                if (pend == null)
+                    return;
+                if (now - _lastDeferredPollMs < 250)
+                    return;
+                _lastDeferredPollMs = now;
+
+                bool anyPending = false;
+                for (int k = 0; k < pend.Length; k++)
+                {
+                    if (pend[k] < 0)
+                        continue;
+                    if (EnsureMulFile(pend[k]) != null)
+                        pend[k] = -1;       // opened (+ generation bumped) — done
+                    else
+                        anyPending = true;  // .mul bytes not in /uo yet
+                }
+
+                if (!anyPending)
+                    _pendingDeferred = null;   // all deferred files landed → stop polling
+            }
+        }
+
+        public override void Load()
+        {
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A1: AnimationsLoader.Load enter");
+            void LoadAnimFromUOPath(int animIndex)
+            {
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step1 pre-GetUOFilePath mul");
+                string pathmul = FileManager.GetUOFilePath("anim" + (animIndex == 0 ? string.Empty : (animIndex + 1).ToString()) + ".mul");
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step2 pathmul={pathmul}");
+                string pathidx = FileManager.GetUOFilePath("anim" + (animIndex == 0 ? string.Empty : (animIndex + 1).ToString()) + ".idx");
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step3 pathidx={pathidx}");
+                bool mulExists = File.Exists(pathmul);
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step4 mulExists={mulExists}");
+                bool idxExists = File.Exists(pathidx);
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step5 idxExists={idxExists}");
+                if (mulExists && idxExists) _files[animIndex] = new UOFileMul(pathmul, pathidx);
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] LAFUO/{animIndex} step6 done");
+            }
+
+            for (int i = 0; i < _files.Length; i++)
+            {
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] loop-iter i={i} HasCustomAnimPath={CustomServerSettings.HasCustomAnimPath}");
+                if (CustomServerSettings.HasCustomAnimPath)
+                {
+                    string muullocation = CustomServerSettings.GetCustomAnimPath();
+
+                    string pathmul = Path.Combine(muullocation, "anim" + (i == 0 ? string.Empty : (i + 1).ToString()) + ".mul");
+                    string pathidx = Path.Combine(muullocation, "anim" + (i == 0 ? string.Empty : (i + 1).ToString()) + ".idx");
+
+
+                    if (File.Exists(pathmul) && File.Exists(pathidx))
+                        _files[i] = new UOFileMul(pathmul, pathidx);
+                    else
+                        LoadAnimFromUOPath(i);
+                }
+                else
+                    LoadAnimFromUOPath(i);
+            }
+
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A2: post 0-9 _files loop");
+
+            // Detect background-deferred anim files: a .mul that is absent now
+            // but whose .idx is present was deferred by the loader UI (main.js
+            // streams the giant anim2-5.mul AFTER world-entry on big-file legacy
+            // shards like Ultima Memento). A file that genuinely does not exist
+            // on the shard has NEITHER .mul nor .idx → not pending. PollDeferred-
+            // Files() will open each of these the moment its bytes land in /uo.
+            {
+                List<int> pending = null;
+                for (int i = 1; i < _files.Length; i++)
+                {
+                    if (_files[i] != null)
+                        continue;
+
+                    string suffix = (i + 1).ToString();
+                    string mul = FileManager.GetUOFilePath("anim" + suffix + ".mul");
+                    string idx = FileManager.GetUOFilePath("anim" + suffix + ".idx");
+                    if (!File.Exists(mul) && File.Exists(idx))
+                        (pending ??= new List<int>()).Add(i);
+                }
+
+                _pendingDeferred = pending?.ToArray();
+                if (_pendingDeferred != null)
+                    Log.Trace($"[anim-defer] {_pendingDeferred.Length} deferred anim file(s) pending background stream: {string.Join(",", _pendingDeferred)}");
+            }
+
+            if (FileManager.IsUOPInstallation)
+            {
+                bool loaduop = false;
+
+                for (int i = 0; i < _filesUop.Length; ++i)
+                {
+                    string pathuop = FileManager.GetUOFilePath($"AnimationFrame{i + 1}.uop");
+
+                    if (File.Exists(pathuop))
+                    {
+                        _filesUop[i] = new UOFileUop(pathuop, "build/animationlegacyframe/{0:D6}/{0:D2}.bin");
+                        _filesUop[i].FillEntries();
+                        loaduop = true;
+                    }
+                }
+
+                if (loaduop)
+                {
+                    LoadUop();
+                }
+            }
+
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A3: post-UOP block");
+
+            if (FileManager.Version >= ClientVersion.CV_500A)
+            {
+                string path = FileManager.GetUOFilePath("mobtypes.txt");
+                ClassicUO.Utility.Logging.Log.Trace($"[anim-debug] A4: mobtypes.txt path={path} exists={File.Exists(path)}");
+
+                if (File.Exists(path))
+                {
+                    string[] typeNames = new string[5]
+                    {
+                        "monster",
+                        "sea_monster",
+                        "animal",
+                        "human",
+                        "equipment"
+                    };
+
+                    using (var reader = new StreamReader(File.OpenRead(path)))
+                    {
+                        string line;
+
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            line = line.Trim();
+
+                            if (line.Length == 0 || line[0] == '#' || !char.IsNumber(line[0]))
+                            {
+                                continue;
+                            }
+
+                            string[] parts = line.Split(
+                                new[] { '\t', ' ' },
+                                StringSplitOptions.RemoveEmptyEntries
+                            );
+
+                            if (parts.Length < 3)
+                            {
+                                continue;
+                            }
+
+                            int id = int.Parse(parts[0]);
+                            string testType = parts[1].ToLower();
+                            int commentIdx = parts[2].IndexOf('#');
+
+                            if (commentIdx > 0)
+                            {
+                                parts[2] = parts[2].Substring(0, commentIdx - 1).Trim();
+                            }
+                            else if (commentIdx == 0)
+                            {
+                                continue;
+                            }
+
+                            //uint number = uint.Parse(parts[2], NumberStyles.HexNumber);
+
+                            if (!uint.TryParse(parts[2].Trim(), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint number))
+                            {
+                                Log.Error("Failed to parse expected number.");
+                                continue;
+                            }
+
+                            for (int i = 0; i < 5; i++)
+                            {
+                                if (
+                                    testType.Equals(
+                                        typeNames[i],
+                                        StringComparison.InvariantCultureIgnoreCase
+                                    )
+                                )
+                                {
+                                    _mobTypes[id] = new MobTypeInfo()
+                                    {
+                                        Type = (AnimationGroupsType)i,
+                                        Flags = (AnimationFlags)(0x80000000 | number)
+                                    };
+
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A5: post-mobtypes.txt block");
+            string file = FileManager.GetUOFilePath("Anim1.def");
+
+            if (File.Exists(file))
+            {
+                using (var defReader = new DefReader(file))
+                {
+                    while (defReader.Next())
+                    {
+                        ushort group = (ushort)defReader.ReadInt();
+
+                        if (group == 0xFFFF)
+                        {
+                            continue;
+                        }
+
+                        int replace = defReader.ReadGroupInt();
+
+                        GroupReplaces[0].Add((group, (byte)replace));
+                    }
+                }
+            }
+
+            file = FileManager.GetUOFilePath("Anim2.def");
+
+            if (File.Exists(file))
+            {
+                using (var defReader = new DefReader(file))
+                {
+                    while (defReader.Next())
+                    {
+                        ushort group = (ushort)defReader.ReadInt();
+
+                        if (group == 0xFFFF)
+                        {
+                            continue;
+                        }
+
+                        int replace = defReader.ReadGroupInt();
+
+                        GroupReplaces[1].Add((group, (byte)replace));
+                    }
+                }
+            }
+
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A6: post-Anim1+2.def");
+            ProcessEquipConvDef();
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A7: post-ProcessEquipConvDef");
+            ProcessBodyDef();
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A8: post-ProcessBodyDef");
+            ProcessCorpseDef();
+            ClassicUO.Utility.Logging.Log.Trace("[anim-debug] A9: AnimationsLoader.Load exit");
+        }
+
+        public bool ReplaceBody(ref ushort body, ref ushort hue)
+        {
+            if (_bodyInfos.TryGetValue(body, out BodyInfo bodyInfo))
+            {
+                body = bodyInfo.Graphic;
+                hue = bodyInfo.Hue;
+
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool ReplaceCorpse(ref ushort body, ref ushort hue)
+        {
+            if (_corpseInfos.TryGetValue(body, out BodyInfo bodyInfo))
+            {
+                body = bodyInfo.Graphic;
+                hue = bodyInfo.Hue;
+
+                return true;
+            }
+
+            return false;
+        }
+
+        public bool ReplaceUopGroup(ushort body, ref byte group)
+        {
+            if (_uopInfos.TryGetValue(body, out UopInfo uopInfo))
+            {
+                group = (byte)uopInfo.ReplacedAnimations[group];
+
+                return true;
+            }
+
+            return false;
+        }
+
+        // ── [anim-resolve] GetIndices empty-result tracer ──
+        // Pinpoints WHY a body/equipment graphic resolves to zero frames even
+        // after every deferred anim2-5.mul has streamed in (the persistent-naked
+        // case: a layer stays NOFRAMES past gen4). Logs the exact empty-return
+        // path — FILE-NOT-OPEN (the .mul this graphic needs is still absent),
+        // OFFSET-OOB / SIZE-OOB (the .idx index entry for this body lies past the
+        // index file, i.e. wrong fileIndex / body-conv mapping) — plus whether the
+        // target file is actually open and the idx length. Deduped per
+        // (reqBody, reason) and hard-capped so it can never flood. Debug-gated via
+        // Log.Trace (silent unless dev=2).
+        private static readonly Dictionary<int, byte> _animResolveState = new Dictionary<int, byte>();
+        private static int _animResolveEmitted;
+        private const int ANIM_RESOLVE_CAP = 400;
+
+        private void AnimResolveTrace(ushort reqBody, ushort convBody, int fileIndex, AnimationGroupsType animType, AnimationFlags flags, long offsetAddress, int actionCount, long idxLen, byte reason)
+        {
+            if (_animResolveEmitted >= ANIM_RESOLVE_CAP)
+                return;
+            int key = (reqBody << 8) | reason;
+            if (_animResolveState.TryGetValue(key, out byte prev) && prev == 1)
+                return;
+            _animResolveState[key] = 1;
+            _animResolveEmitted++;
+            bool fileOpen = fileIndex >= 0 && fileIndex < _files.Length && _files[fileIndex] != null;
+            string r = reason == 0 ? "FILE-NOT-OPEN" : reason == 1 ? "OFFSET-OOB" : "SIZE-OOB";
+            Log.Trace($"[anim-resolve] reqBody=0x{reqBody:X4} convBody=0x{convBody:X4} reason={r} fileIndex={fileIndex} fileOpen={fileOpen} type={animType} flags={flags} offset={offsetAddress} actions={actionCount} idxLen={idxLen}");
+        }
+
+        public ReadOnlySpan<AnimationDirection> GetIndices
+        (
+            ClientVersion clientVersion,
+            ushort body,
+            ref ushort hue,
+            ref AnimationFlags flags,
+            out int fileIndex,
+            out AnimationGroupsType animType
+        )
+        {
+            fileIndex = 0;
+            animType = AnimationGroupsType.Unknown;
+            ushort reqBody = body;
+
+            if (!_mobTypes.TryGetValue(body, out MobTypeInfo mobInfo))
+            {
+                mobInfo.Flags = AnimationFlags.None;
+                mobInfo.Type = AnimationGroupsType.Unknown;
+            }
+
+            flags = mobInfo.Flags;
+
+            if ((mobInfo.Flags & AnimationFlags.UseUopAnimation) != 0)
+            {
+                if (animType == AnimationGroupsType.Unknown)
+                    animType = mobInfo.Type != AnimationGroupsType.Unknown ? mobInfo.Type : CalculateTypeByGraphic(body);
+
+                bool replaceFound = _uopInfos.TryGetValue(body, out UopInfo uopInfo);
+                AnimationDirection[] animIndices = Array.Empty<AnimationDirection>();
+
+                for (int actioIdx = 0; actioIdx < MAX_ACTIONS; ++actioIdx)
+                {
+                    int action = replaceFound ? uopInfo.ReplacedAnimations[actioIdx] : actioIdx;
+                    string hashString = $"build/animationlegacyframe/{body:D6}/{action:D2}.bin";
+                    ulong hash = UOFileUop.CreateHash(hashString);
+
+                    for (int index = 0; index < _filesUop.Length; ++index)
+                    {
+                        if (_filesUop[index] != null && _filesUop[index].TryGetUOPData(hash, out UOFileIndex data))
+                        {
+                            if (animIndices.Length == 0)
+                                animIndices = new AnimationDirection[MAX_ACTIONS];
+
+                            fileIndex = index;
+
+                            ref AnimationDirection animIndex = ref animIndices[actioIdx];
+                            animIndex.Position = (uint)data.Offset;
+                            animIndex.Size = (uint)data.Length;
+                            animIndex.UncompressedSize = (uint)data.DecompressedLength;
+                            animIndex.CompressionType = data.CompressionFlag;
+
+                            break;
+                        }
+                    }
+                }
+
+                return animIndices;
+            }
+
+            if (_bodyConvInfos.TryGetValue(body, out BodyConvInfo bodyConvInfo))
+            {
+                hue = bodyConvInfo.Hue;
+                body = bodyConvInfo.Graphic;
+                fileIndex = bodyConvInfo.FileIndex;
+
+                if (clientVersion < ClientVersion.CV_500A)
+                    animType = bodyConvInfo.AnimType;
+            }
+
+            if (animType == AnimationGroupsType.Unknown)
+                animType = mobInfo.Type != AnimationGroupsType.Unknown ? mobInfo.Type : CalculateTypeByGraphic(body, fileIndex);
+
+            UOFileMul fileMul = EnsureMulFile(fileIndex);
+            if (fileMul == null)
+            {
+                AnimResolveTrace(reqBody, body, fileIndex, animType, flags, 0, 0, -1, 0);
+                return ReadOnlySpan<AnimationDirection>.Empty;
+            }
+
+            UOFile fileIdx = fileMul.IdxFile;
+            long offsetAddress = CalculateOffset(body, animType, flags, out int actionCount);
+
+            long offset = fileIdx.Position + offsetAddress;
+            long end = fileIdx.Position + fileIdx.Length;
+
+            if (offset >= end)
+            {
+                AnimResolveTrace(reqBody, body, fileIndex, animType, flags, offsetAddress, actionCount, fileIdx.Length, 1);
+                return ReadOnlySpan<AnimationDirection>.Empty;
+            }
+
+            if (offset + (actionCount * MAX_DIRECTIONS * sizeof(AnimIdxBlock)) > end)
+            {
+                AnimResolveTrace(reqBody, body, fileIndex, animType, flags, offsetAddress, actionCount, fileIdx.Length, 2);
+                return ReadOnlySpan<AnimationDirection>.Empty;
+            }
+
+
+            fileIdx.Seek(offsetAddress, SeekOrigin.Begin);
+
+            int size = actionCount * MAX_DIRECTIONS;
+
+            AnimIdxBlock[] indicesBuf = ArrayPool<AnimIdxBlock>.Shared.Rent(size);
+            fileIdx.Read(MemoryMarshal.AsBytes(indicesBuf.AsSpan(0, size)));
+
+            var directions = new AnimationDirection[size];
+            for (int i = 0; i < directions.Length; ++i)
+            {
+                ref AnimationDirection dir = ref directions[i];
+                ref AnimIdxBlock index = ref indicesBuf[i];
+                dir.Position = index.Position;
+                dir.Size = index.Size;
+                dir.UncompressedSize = index.Unknown;
+                dir.CompressionType = CompressionType.None;
+            }
+
+            ArrayPool<AnimIdxBlock>.Shared.Return(indicesBuf);
+            return directions;
+        }
+
+        private long CalculateOffset(
+            ushort graphic,
+            AnimationGroupsType type,
+            AnimationFlags flags,
+            out int groupCount
+        )
+        {
+            long result = 0;
+            groupCount = 0;
+
+            AnimationGroups group = AnimationGroups.None;
+
+            switch (type)
+            {
+                case AnimationGroupsType.Monster:
+
+                    if ((flags & AnimationFlags.CalculateOffsetByPeopleGroup) != 0)
+                    {
+                        group = AnimationGroups.People;
+                    }
+                    else if ((flags & AnimationFlags.CalculateOffsetByLowGroup) != 0)
+                    {
+                        group = AnimationGroups.Low;
+                    }
+                    else
+                    {
+                        group = AnimationGroups.High;
+                    }
+
+                    break;
+
+                case AnimationGroupsType.SeaMonster:
+                    result = CalculateHighGroupOffset(graphic);
+                    groupCount = (int)LowAnimationGroup.AnimationCount;
+
+                    break;
+
+                case AnimationGroupsType.Animal:
+
+                    if ((flags & AnimationFlags.CalculateOffsetLowGroupExtended) != 0)
+                    {
+                        if ((flags & AnimationFlags.CalculateOffsetByPeopleGroup) != 0)
+                        {
+                            group = AnimationGroups.People;
+                        }
+                        else if ((flags & AnimationFlags.CalculateOffsetByLowGroup) != 0)
+                        {
+                            group = AnimationGroups.Low;
+                        }
+                        else
+                        {
+                            group = AnimationGroups.High;
+                        }
+                    }
+                    else
+                    {
+                        group = AnimationGroups.Low;
+                    }
+
+                    break;
+
+                default:
+                    group = AnimationGroups.People;
+
+                    break;
+            }
+
+            switch (group)
+            {
+                case AnimationGroups.Low:
+                    result = CalculateLowGroupOffset(graphic);
+                    groupCount = (int)LowAnimationGroup.AnimationCount;
+
+                    break;
+
+                case AnimationGroups.High:
+                    result = CalculateHighGroupOffset(graphic);
+                    groupCount = (int)HighAnimationGroup.AnimationCount;
+
+                    break;
+
+                case AnimationGroups.People:
+                    result = CalculatePeopleGroupOffset(graphic);
+                    groupCount = (int)PeopleAnimationGroup.AnimationCount;
+
+                    break;
+            }
+
+            return result;
+        }
+
+        private void ProcessEquipConvDef()
+        {
+            if (FileManager.Version < ClientVersion.CV_300)
+            {
+                return;
+            }
+
+            string file = FileManager.GetUOFilePath("Equipconv.def");
+
+            if (File.Exists(file))
+            {
+                using (var defReader = new DefReader(file, 5))
+                {
+                    while (defReader.Next())
+                    {
+                        ushort body = (ushort)defReader.ReadInt();
+                        ushort graphic = (ushort)defReader.ReadInt();
+                        ushort newGraphic = (ushort)defReader.ReadInt();
+                        int gump = defReader.ReadInt();
+
+                        if (gump > ushort.MaxValue)
+                        {
+                            continue;
+                        }
+
+                        if (gump == 0)
+                        {
+                            gump = graphic;
+                        }
+                        else if (gump == 0xFFFF || gump == -1)
+                        {
+                            gump = newGraphic;
+                        }
+
+                        ushort color = (ushort)defReader.ReadInt();
+
+                        if (!_equipConv.TryGetValue(body, out Dictionary<ushort, EquipConvData> dict))
+                        {
+                            _equipConv[body] = (dict = new Dictionary<ushort, EquipConvData>());
+                        }
+
+                        dict[graphic] = new EquipConvData(newGraphic, (ushort)gump, color);
+                    }
+                }
+            }
+        }
+
+        // True if anim file <i> is loadable: already open, OR still
+        // background-streaming (deferred) and therefore guaranteed to open
+        // via EnsureMulFile once its .mul lands. A file present on neither
+        // disk nor the deferred-pending list (no .mul AND no .idx on the
+        // shard) is genuinely absent → not usable, so its bodyconv entries
+        // are still skipped, preserving the upstream guard's intent.
+        private bool IsAnimFileUsable(int i)
+        {
+            if (i < 0 || i >= _files.Length)
+                return false;
+            if (_files[i] != null)
+                return true;
+            int[] pend = _pendingDeferred;
+            if (pend != null)
+            {
+                for (int k = 0; k < pend.Length; k++)
+                    if (pend[k] == i)   // still pending (>=0) → deferred, will open
+                        return true;
+            }
+            return false;
+        }
+
+        public void ProcessBodyConvDef(BodyConvFlags flags)
+        {
+            if (FileManager.Version < ClientVersion.CV_300)
+            {
+                return;
+            }
+
+            string file = FileManager.GetUOFilePath("Bodyconv.def");
+
+            if (!File.Exists(file))
+                return;
+
+            using (var defReader = new DefReader(file))
+            {
+                while (defReader.Next())
+                {
+                    ushort index = (ushort)defReader.ReadInt();
+                    for (int i = 1; i < defReader.PartsCount; i++)
+                    {
+                        int body = defReader.ReadInt();
+                        if (body < 0)
+                        {
+                            continue;
+                        }
+
+                        // Ensure the client is allowed to use these new graphics
+                        if (i == 1)
+                        {
+                            if (!flags.HasFlag(BodyConvFlags.Anim1))
+                            {
+                                continue;
+                            }
+                        }
+                        else if (i == 2)
+                        {
+                            if (!flags.HasFlag(BodyConvFlags.Anim2))
+                            {
+                                continue;
+                            }
+                        }
+
+                        // NOTE: for fileindex >= 3 the client automatically accepts body conversion.
+                        //       Probably it ignores the flags
+                        /*else if (i == 3)
+                        {
+                            if (flags.HasFlag(BodyConvFlags.Anim3))
+                            {
+                                continue;
+                            }
+                        }
+                        else if (i == 4)
+                        {
+                            if (flags.HasFlag(BodyConvFlags.Anim4))
+                            {
+                                continue;
+                            }
+                        }
+                        */
+
+                        sbyte mountedHeightOffset = 0;
+                        if (i == 1)
+                        {
+                            if (index == 0x00C0 || index == 793)
+                            {
+                                mountedHeightOffset = -9;
+                            }
+                        }
+                        else if (i == 2)
+                        {
+                            if (index == 0x0579)
+                            {
+                                mountedHeightOffset = 9;
+                            }
+                        }
+                        else if (i == 4)
+                        {
+                            mountedHeightOffset = -9;
+
+                            if (index == 0x0115 || index == 0x00C0)
+                            {
+                                mountedHeightOffset = 0;
+                            }
+                            else if (index == 0x042D)
+                            {
+                                mountedHeightOffset = 3;
+                            }
+                        }
+
+                        // WASM defer fix (v0.8.21): anim2-5.mul stream in AFTER world
+                        // entry on big-file shards (Ultima Memento), so _files[i] is
+                        // null here at login even though the file DOES exist on the
+                        // shard (its .idx is present, the .mul is still downloading).
+                        // The upstream `_files[i] == null` gate then silently dropped
+                        // every bodyconv entry pointing at a deferred file, leaving high
+                        // human/equipment bodies (e.g. 0x045F, 0x04C2) mapped to
+                        // fileIndex 0 → a People-group offset PAST anim.idx's end →
+                        // NOFRAMES → permanently naked character. Treat a deferred-
+                        // pending file as usable; GetIndices' EnsureMulFile opens it
+                        // lazily once the bytes land and the body pops in (the same
+                        // proven path that already dresses non-converted bodies).
+                        if (!IsAnimFileUsable(i))
+                        {
+                            continue;
+                        }
+
+                        _bodyConvInfos[index] = new BodyConvInfo()
+                        {
+                            FileIndex = i,
+                            Graphic = (ushort)body,
+                            // TODO: fix for UOFileManager.Version < ClientVersion.CV_500A
+                            AnimType = CalculateTypeByGraphic((ushort)body, i),
+                            MountHeight = mountedHeightOffset
+                        };
+                    }
+                }
+            }
+        }
+
+        private void ProcessBodyDef()
+        {
+            if (FileManager.Version < ClientVersion.CV_300)
+            {
+                return;
+            }
+
+            string file = FileManager.GetUOFilePath("Body.def");
+
+            if (!File.Exists(file))
+                return;
+
+            using (var defReader = new DefReader(file, 1))
+            {
+                while (defReader.Next())
+                {
+                    int index = defReader.ReadInt();
+
+                    if (_bodyInfos.TryGetValue(index, out BodyInfo info) && info.Graphic != 0)
+                    {
+                        continue;
+                    }
+
+                    int[] group = defReader.ReadGroup();
+
+                    if (group == null)
+                    {
+                        continue;
+                    }
+
+                    int color = defReader.ReadInt();
+
+                    //Yes, this is actually how this is supposed to work.
+                    int checkIndex = group.Length >= 3 ? group[2] : group[0];
+
+                    _bodyInfos[index] = new BodyInfo()
+                    {
+                        Graphic = (ushort)checkIndex,
+                        Hue = (ushort)color
+                    };
+                }
+            }
+        }
+
+        private void ProcessCorpseDef()
+        {
+            if (FileManager.Version < ClientVersion.CV_300)
+            {
+                return;
+            }
+
+            string file = FileManager.GetUOFilePath("Corpse.def");
+
+            if (!File.Exists(file))
+                return;
+
+            using (var defReader = new DefReader(file, 1))
+            {
+                while (defReader.Next())
+                {
+                    int index = defReader.ReadInt();
+
+                    if (_corpseInfos.TryGetValue(index, out BodyInfo b) && b.Graphic != 0)
+                    {
+                        continue;
+                    }
+
+                    int[] group = defReader.ReadGroup();
+
+                    if (group == null)
+                    {
+                        continue;
+                    }
+
+                    int color = defReader.ReadInt();
+                    int checkIndex = group.Length >= 3 ? group[2] : group[0];
+
+                    _corpseInfos[index] = new BodyInfo()
+                    {
+                        Graphic = (ushort)checkIndex,
+                        Hue = (ushort)color
+                    };
+                }
+            }
+        }
+
+        private void LoadUop()
+        {
+            if (FileManager.Version <= ClientVersion.CV_60144)
+            {
+                return;
+            }
+
+            string animationSequencePath = FileManager.GetUOFilePath("AnimationSequence.uop");
+
+            if (!File.Exists(animationSequencePath))
+            {
+                Log.Warn("AnimationSequence.uop not found");
+
+                return;
+            }
+
+            // ==========================
+            // credit: @tristran
+            // ==========================
+            // u32 animid
+            // 12 times: [
+            //   u32 unk0 //often zero
+            // ]
+            // //--------------
+            // u32 replace
+            // replace times: [
+            //   u32 oldgroup
+            //   u32 framecount
+            //   u32 newgroup
+            //   //if newgroup not is -1 then this animation group is replaced by that group
+            //   u32 flags1 //unsure what these mean often 0x41100000
+            //   16 times: [ //maybe something to do with mounts but...
+            //     u8 unk1 //if newgroup ==-1 usually -128 else usually 0
+            //   ]
+            //   8 times: [
+            //     u32 unk2 //often 0 animation 826 has something different...
+            //   ]
+            //   u32 num1     //rarely present but human (400) has them for oldgroup 0,1,2,3,23,24,35 (stand/walk/run)
+            //   num1 times: [
+            //     u32 w0
+            //     u32 w1
+            //     u32 w2
+            //     u32 w3
+            //     u32 w4
+            //     u32 w5
+            //     u16 s6
+            //     u32 w7
+            //     u16 s8
+            //   ]
+            //   u32 num2
+            //   num2 times: [
+            //     u32 unk3
+            //   ]
+            // ]
+            // //-----------
+            // u32 xtra
+            // xtra times: [
+            //   u8 mob_mode //identifies the "mode" this defintion belongs to combat(0)/id(1)/ride (2) /fly(3)/fly combat?(4)/fly idle(5) /sit(6)
+            //   s8 b2       //fallback mode?
+            //   u32 def_action // default action (fallback if action not in following structure)
+            //   u32 num1
+            //   num1 times: [ //transition to other mode? (see gargoyle (666))
+            //     u8 b6     //mode
+            //     u32 n5    //anim/group
+            //   ]
+            //   u32 num2    //usually 3 (stand, walk, run)
+            //   num2 times: [
+            //     u8 action
+            //     u32 anim1h //one handed?
+            //     u32 anim2h //two handed?
+            //   ]
+            //   u32 num3    // NewCharacterAnimation
+            //   num3 times: [
+            //     s8 type      //actual action fight etc
+            //     s8 action    //sub action
+            //     u32 num4     //random select one of the list
+            //     num4 times: [
+            //       u32 anim   //group
+            //     ]
+            //   ]
+            // ]
+
+            /*
+            based on the current "mode" the mobile is in (e.g. IsFlying check) select the right set of definitions from the xtra array
+            then consult the num2 based list for stand/walk/run
+            and the num3 based list for NewCharacterAnimation packets
+            /
+            / flags
+            41100000
+            41400000 usually group 22,24 (walk run?)
+            40C00000 often group 31
+            42860000 anim 692   Animated weapon
+            41F80000 anim 692
+            41300000 anim 1246,1247 , group 0  (jack o lantern)
+            */
+
+            /*
+            based on the current "mode" the mobile is in (e.g. IsFlying check) select the right set of definitions from the xtra array
+            then consult the num2 based list for stand/walk/run
+            and the num3 based list for NewCharacterAnimation packets
+            /
+            / flags
+            41100000
+            41400000 usually group 22,24 (walk run?)
+            40C00000 often group 31
+            42860000 anim 692   Animated weapon
+            41F80000 anim 692
+            41300000 anim 1246,1247 , group 0  (jack o lantern)
+            */
+
+            var animSeq = new UOFileUop(
+                animationSequencePath,
+                "build/animationsequence/{0:D8}.bin"
+            );
+
+            animSeq.FillEntries();
+
+            byte[] buf = new byte[1024];
+            byte[] dbuf = new byte[1024];
+
+            foreach (UOFileIndex entry in animSeq.Entries)
+            {
+                if (entry.Length == 0)
+                    continue;
+
+                animSeq.Seek(entry.Offset, SeekOrigin.Begin);
+
+                if (buf.Length < entry.Length)
+                    buf = new byte[entry.Length];
+
+                animSeq.Read(buf.AsSpan(0, entry.Length));
+                var reader = new StackDataReader(buf);
+                if (entry.CompressionFlag >= CompressionType.Zlib)
+                {
+                    if (dbuf.Length <= entry.DecompressedLength)
+                        dbuf = new byte[entry.DecompressedLength*2];
+
+                    ZLib.ZLibError ok = ZLib.Decompress(buf.AsSpan(0, entry.Length), dbuf.AsSpan(0, entry.DecompressedLength));
+                    if (ok != ZLib.ZLibError.Ok)
+                        continue;
+
+                    reader = new StackDataReader(dbuf.AsSpan(0, entry.DecompressedLength));
+                }
+
+                if (reader.Remaining <= 0)
+                {
+                    continue;
+                }
+
+                uint animID = reader.ReadUInt32LE();
+                reader.Skip(48);
+                int replaces = reader.ReadInt32LE();
+
+                var uopInfo = new UopInfo();
+                int j = 0;
+                foreach (ref int idx in uopInfo.ReplacedAnimations)
+                    idx = j++;
+
+                if (replaces != 48 && replaces != 68)
+                {
+                    for (int k = 0; k < replaces; k++)
+                    {
+                        int oldGroup = reader.ReadInt32LE();
+                        uint frameCount = reader.ReadUInt32LE();
+                        int newGroup = reader.ReadInt32LE();
+
+                        if (frameCount == 0)
+                        {
+                            uopInfo.ReplacedAnimations[oldGroup] = newGroup;
+                        }
+
+                        reader.Skip(60);
+                    }
+                }
+
+                _uopInfos[(int)animID] = uopInfo;
+            }
+
+            animSeq.Dispose();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe uint CalculatePeopleGroupOffset(ushort graphic) => (uint)(((graphic - 400) * 175 + 35000) * sizeof(AnimIdxBlock));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe uint CalculateHighGroupOffset(ushort graphic) => (uint)(graphic * 110 * sizeof(AnimIdxBlock));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe uint CalculateLowGroupOffset(ushort graphic) => (uint)(((graphic - 200) * 65 + 22000) * sizeof(AnimIdxBlock));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private AnimationGroupsType CalculateTypeByGraphic(ushort graphic, int fileIndex = 0)
+        {
+            if (fileIndex == 1) // anim2
+            {
+                return graphic < 200 ? AnimationGroupsType.Monster : AnimationGroupsType.Animal;
+            }
+
+            if (fileIndex == 2) // anim3
+            {
+                return graphic < 300
+                    ? AnimationGroupsType.Animal
+                    : graphic < 400
+                        ? AnimationGroupsType.Monster
+                        : AnimationGroupsType.Human;
+            }
+
+            return graphic < 200
+                ? AnimationGroupsType.Monster
+                : graphic < 400
+                    ? AnimationGroupsType.Animal
+                    : AnimationGroupsType.Human;
+        }
+
+        public override void ClearResources() { }
+
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void GetSittingAnimDirection(ref byte dir, ref bool mirror, ref int x, ref int y)
+        {
+            switch (dir)
+            {
+                case 0:
+                    mirror = true;
+                    dir = 3;
+
+                    break;
+
+                case 2:
+                    mirror = true;
+                    dir = 1;
+
+                    break;
+
+                case 4:
+                    mirror = false;
+                    dir = 1;
+
+                    break;
+
+                case 6:
+                    mirror = false;
+                    dir = 3;
+
+                    break;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void FixSittingDirection(
+            ref byte direction,
+            ref bool mirror,
+            ref int x,
+            ref int y,
+            ref SittingInfoData data
+        )
+        {
+            switch (direction)
+            {
+                case 7:
+                case 0:
+                    {
+                        if (data.Direction1 == -1)
+                        {
+                            if (direction == 7)
+                            {
+                                direction = (byte)data.Direction4;
+                            }
+                            else
+                            {
+                                direction = (byte)data.Direction2;
+                            }
+                        }
+                        else
+                        {
+                            direction = (byte)data.Direction1;
+                        }
+
+                        break;
+                    }
+
+                case 1:
+                case 2:
+                    {
+                        if (data.Direction2 == -1)
+                        {
+                            if (direction == 1)
+                            {
+                                direction = (byte)data.Direction1;
+                            }
+                            else
+                            {
+                                direction = (byte)data.Direction3;
+                            }
+                        }
+                        else
+                        {
+                            direction = (byte)data.Direction2;
+                        }
+
+                        break;
+                    }
+
+                case 3:
+                case 4:
+                    {
+                        if (data.Direction3 == -1)
+                        {
+                            if (direction == 3)
+                            {
+                                direction = (byte)data.Direction2;
+                            }
+                            else
+                            {
+                                direction = (byte)data.Direction4;
+                            }
+                        }
+                        else
+                        {
+                            direction = (byte)data.Direction3;
+                        }
+
+                        break;
+                    }
+
+                case 5:
+                case 6:
+                    {
+                        if (data.Direction4 == -1)
+                        {
+                            if (direction == 5)
+                            {
+                                direction = (byte)data.Direction3;
+                            }
+                            else
+                            {
+                                direction = (byte)data.Direction1;
+                            }
+                        }
+                        else
+                        {
+                            direction = (byte)data.Direction4;
+                        }
+
+                        break;
+                    }
+            }
+
+            GetSittingAnimDirection(ref direction, ref mirror, ref x, ref y);
+
+            const int SITTING_OFFSET_X = 8;
+
+            int offsX = SITTING_OFFSET_X;
+
+            if (mirror)
+            {
+                if (direction == 3)
+                {
+                    y += 25 + data.MirrorOffsetY;
+                    x += offsX - 4;
+                }
+                else
+                {
+                    y += data.OffsetY + 9;
+                }
+            }
+            else
+            {
+                if (direction == 3)
+                {
+                    y += 23 + data.MirrorOffsetY;
+                    x -= 3;
+                }
+                else
+                {
+                    y += 10 + data.OffsetY;
+                    x -= offsX + 1;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public AnimationGroups GetGroupIndex(ushort graphic, AnimationGroupsType animType)
+        {
+            switch (animType)
+            {
+                case AnimationGroupsType.Animal:
+                    return AnimationGroups.Low;
+
+                case AnimationGroupsType.Monster:
+                case AnimationGroupsType.SeaMonster:
+                    return AnimationGroups.High;
+
+                case AnimationGroupsType.Human:
+                case AnimationGroupsType.Equipment:
+                    return AnimationGroups.People;
+            }
+
+            return AnimationGroups.High;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public byte GetDeathAction(
+            ushort animID,
+            AnimationFlags animFlags,
+            AnimationGroupsType animType,
+            bool second,
+            bool isRunning = false
+        )
+        {
+            //ConvertBodyIfNeeded(ref animID);
+
+            if ((animFlags & AnimationFlags.CalculateOffsetByLowGroup) != 0)
+            {
+                animType = AnimationGroupsType.Animal;
+            }
+
+            if ((animFlags & AnimationFlags.CalculateOffsetLowGroupExtended) != 0)
+            {
+                animType = AnimationGroupsType.Monster;
+            }
+
+            switch (animType)
+            {
+                case AnimationGroupsType.Animal:
+
+                    if (
+                        (animFlags & AnimationFlags.Use2IfHittedWhileRunning) != 0
+                        || (animFlags & AnimationFlags.CanFlying) != 0
+                    )
+                    {
+                        return 2;
+                    }
+
+                    if ((animFlags & AnimationFlags.UseUopAnimation) != 0)
+                    {
+                        return (byte)(second ? 3 : 2);
+                    }
+
+                    return (byte)(
+                        second ? LowAnimationGroup.Die2 : LowAnimationGroup.Die1
+                    );
+
+                case AnimationGroupsType.SeaMonster:
+                    {
+                        if (!isRunning)
+                        {
+                            return 8;
+                        }
+
+                        goto case AnimationGroupsType.Monster;
+                    }
+
+                case AnimationGroupsType.Monster:
+
+                    if ((animFlags & AnimationFlags.UseUopAnimation) != 0)
+                    {
+                        return (byte)(second ? 3 : 2);
+                    }
+
+                    return (byte)(
+                        second ? HighAnimationGroup.Die2 : HighAnimationGroup.Die1
+                    );
+
+                case AnimationGroupsType.Human:
+                case AnimationGroupsType.Equipment:
+                    return (byte)(
+                        second ? PeopleAnimationGroup.Die2 : PeopleAnimationGroup.Die1
+                    );
+            }
+
+            return 0;
+        }
+
+        public Span<FrameInfo> ReadUOPAnimationFrames(
+            ushort animID,
+            byte animGroup,
+            byte direction,
+            AnimationGroupsType type,
+            int fileIndex,
+            AnimationDirection index
+        )
+        {
+            if (fileIndex < 0 || fileIndex >= _filesUop.Length)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            UOFileUop file = _filesUop[fileIndex];
+
+            if (index.Position == 0 && index.Size == 0)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            if (_frames == null)
+            {
+                _frames = new FrameInfo[22];
+            }
+
+            if (
+                fileIndex == 0
+                && index.Size == 0
+                && index.UncompressedSize == 0
+                && index.Position == 0
+            )
+            {
+                Log.Warn("uop animData is null");
+
+                return Span<FrameInfo>.Empty;
+            }
+
+            file.Seek(index.Position, SeekOrigin.Begin);
+            byte[] buf = ArrayPool<byte>.Shared.Rent((int)index.Size); //new byte[index.Size];
+            file.Read(buf);
+
+            var reader = new StackDataReader(buf);
+
+            byte[] dbuf = null;
+            // dbufPooled tracks the array we actually rented from the pool. dbuf may be
+            // reassigned to a non-pooled array by BwtDecompress, so we must never return
+            // dbuf itself to the pool (that throws ArgumentException_BufferNotFromPool).
+            byte[] dbufPooled = null;
+            if (index.CompressionType >= CompressionType.Zlib)
+            {
+                dbufPooled = ArrayPool<byte>.Shared.Rent((int)index.UncompressedSize); //new byte[(int)index.UncompressedSize];
+                dbuf = dbufPooled;
+                ZLib.ZLibError result = ZLib.Decompress(buf, dbufPooled);
+                if (result != ZLib.ZLibError.Ok)
+                {
+                    Log.Error($"error reading uop animation. AnimID: {animID} | Group: {animGroup} | Dir: {direction} | FileIndex: {fileIndex}");
+
+                    ArrayPool<byte>.Shared.Return(buf);
+                    ArrayPool<byte>.Shared.Return(dbufPooled);
+
+                    return Span<FrameInfo>.Empty;
+                }
+
+                if (index.CompressionType == CompressionType.ZlibBwt)
+                {
+                    dbuf = BwtDecompress.Decompress(dbufPooled);
+                }
+
+                reader = new StackDataReader(dbuf);
+            }
+
+            reader.Skip(32);
+
+            int fc = reader.ReadInt32LE();
+            uint dataStart = reader.ReadUInt32LE();
+            reader.Seek(dataStart);
+
+            UOPFrameData[] sharedBuffer = ArrayPool<UOPFrameData>.Shared.Rent(fc);
+            try
+            {
+                Span<UOPFrameData> frameData = sharedBuffer.AsSpan(0, fc);
+                frameData.Clear();
+
+                for (int i = 0; i < fc; ++i)
+                {
+                    int start = reader.Position;
+
+                    ushort group = reader.ReadUInt16LE();
+                    ushort frameId = reader.ReadUInt16LE();
+                    reader.ReadUInt64LE();
+                    uint pixeloffset = reader.ReadUInt32LE();
+
+                    ref UOPFrameData frame = ref frameData[i];
+                    frame.Position = start;
+                    frame.Group = group;
+                    frame.FrameID = frameId;
+                    frame.PixelOffset = pixeloffset;
+                }
+
+                var list = new List<UOPFrameData>(fc);
+                int lastFrameId = 1;
+                for (int i = 0; i < fc; ++i)
+                {
+                    while (frameData[i].FrameID - lastFrameId > 1)
+                    {
+                        lastFrameId += 1;
+                        list.Add(new()
+                        {
+                            Position = 0, // make sure we treat it as an empty frame
+                            FrameID = lastFrameId
+                        });
+                    }
+
+                    list.Add(frameData[i]);
+                    lastFrameId = frameData[i].FrameID;
+                }
+
+                frameData = CollectionsMarshal.AsSpan(list);
+                int maxFrameCount = frameData.Length;
+
+                // Looks like the min amount of frames is 10 for equipment
+                int realFrameCount = type == AnimationGroupsType.Equipment ?
+                    Math.Max(10, (int)Math.Round(maxFrameCount / (float)MAX_DIRECTIONS))
+                    :
+                    (int)Math.Round(maxFrameCount / (float)MAX_DIRECTIONS);
+
+
+                if (realFrameCount > _frames.Length)
+                {
+                    _frames = new FrameInfo[realFrameCount];
+                }
+
+                Span<FrameInfo> framesSpan = _frames.AsSpan(0, realFrameCount);
+                framesSpan.Clear();
+
+                // var dirFrameStartIdx = realFrameCount * direction;
+
+                foreach (ref readonly UOPFrameData frame in frameData)
+                {
+                    // validate the group only if the frame is valid
+                    if (frame.Position > 0)
+                    {
+                        if (frame.Group != animGroup)
+                        {
+                            // we dont ignore here, might be the AnimationSequence.uop that changes the group
+                            // continue;
+                        }
+                    }
+
+                    int frameDirection = (frame.FrameID - 1) / realFrameCount;
+
+                    if (frameDirection < direction)
+                    {
+                        // still not getting the right direction yet
+                        continue;
+                    }
+
+                    if (frameDirection > direction)
+                    {
+                        // end of the direction
+                        break;
+                    }
+
+                    int idx = (frame.FrameID - 1) % realFrameCount;
+                    ref FrameInfo frameInfo = ref framesSpan[idx];
+
+                    // we need to zero-out the frame or we will see ghost animations coming from other animation queries
+                    frameInfo.Num = idx;
+                    frameInfo.CenterX = 0;
+                    frameInfo.CenterY = 0;
+                    frameInfo.Width = 0;
+                    frameInfo.Height = 0;
+
+                    // if it's a missing frame, we skip, but the animation gets tracked
+                    if (frame.Position == 0)
+                    {
+                        continue;
+                    }
+
+                    reader.Seek(frame.Position + frame.PixelOffset);
+
+                    ReadOnlySpan<ushort> palette = MemoryMarshal.Cast<byte, ushort>(reader.Buffer.Slice(reader.Position, 512));
+                    reader.Skip(512);
+
+                    ReadSpriteData(ref reader, palette, ref frameInfo, true);
+                }
+
+                return framesSpan;
+            }
+            finally
+            {
+                ArrayPool<UOPFrameData>.Shared.Return(sharedBuffer);
+                ArrayPool<byte>.Shared.Return(buf);
+                if(dbufPooled != null)
+                    ArrayPool<byte>.Shared.Return(dbufPooled);
+            }
+        }
+
+        public Span<FrameInfo> ReadMULAnimationFrames(int fileIndex, AnimationDirection index)
+        {
+            if (fileIndex < 0 || fileIndex >= _files.Length)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            if (index.Position == 0 && index.Size == 0)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            if (index.Position == 0xFFFF_FFFF || index.Size == 0xFFFF_FFFF || index.Size <= 0)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            UOFileMul file = EnsureMulFile(fileIndex);
+
+            if (file == null)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            if (index.Position + index.Size > file.Length)
+            {
+                return Span<FrameInfo>.Empty;
+            }
+
+            // TODO: check if UOFileIndex works
+            file.Seek(index.Position, SeekOrigin.Begin);
+            byte[] buf = new byte[index.Size];
+            file.Read(buf);
+
+            var reader = new StackDataReader(buf);
+            ReadOnlySpan<ushort> palette = MemoryMarshal.Cast<byte, ushort>(reader.Buffer.Slice(reader.Position, 512));
+            reader.Skip(512);
+
+            long dataStart = reader.Position;
+            uint frameCount = reader.ReadUInt32LE();
+            var frameOffset = new ReadOnlySpan<uint>((uint*)reader.PositionAddress, (int)frameCount);
+
+            if (_frames == null || frameCount > _frames.Length)
+            {
+                _frames = new FrameInfo[frameCount];
+            }
+
+            Span<FrameInfo> frames = _frames.AsSpan(0, (int)frameCount);
+
+            for (int i = 0; i < frameCount; i++)
+            {
+                reader.Seek(dataStart + frameOffset[i]);
+
+                frames[i].Num = i;
+                ReadSpriteData(ref reader, palette, ref frames[i], false);
+            }
+
+            return frames;
+        }
+
+        private void ReadSpriteData(
+            ref StackDataReader reader,
+            ReadOnlySpan<ushort> palette,
+            ref FrameInfo frame,
+            bool alphaCheck
+        )
+        {
+            frame.CenterX = reader.ReadInt16LE();
+            frame.CenterY = reader.ReadInt16LE();
+            frame.Width = reader.ReadInt16LE();
+            frame.Height = reader.ReadInt16LE();
+
+            if (frame.Width <= 0 || frame.Height <= 0)
+            {
+                return;
+            }
+
+            int bufferSize = frame.Width * frame.Height;
+
+            if (frame.Pixels == null || frame.Pixels.Length < bufferSize)
+            {
+                frame.Pixels = new uint[bufferSize];
+            }
+            else
+            {
+                frame.Pixels.AsSpan().Slice(0, bufferSize).Fill(0);
+            }
+
+            Span<uint> data = frame.Pixels;
+
+            uint header = reader.ReadUInt32LE();
+
+            while (header != 0x7FFF7FFF && reader.Position < reader.Length)
+            {
+                ushort runLength = (ushort)(header & 0x0FFF);
+                int x = (int)((header >> 22) & 0x03FF);
+
+                if ((x & 0x0200) > 0)
+                {
+                    x |= unchecked((int)0xFFFFFE00);
+                }
+
+                int y = (int)((header >> 12) & 0x3FF);
+
+                if ((y & 0x0200) > 0)
+                {
+                    y |= unchecked((int)0xFFFFFE00);
+                }
+
+                x += frame.CenterX;
+                y += frame.CenterY + frame.Height;
+
+                int block = y * frame.Width + x;
+
+                for (int k = 0; k < runLength; ++k, ++block)
+                {
+                    ushort val = palette[reader.ReadUInt8()];
+
+                    // FIXME: same of MUL ? Keep it as original for the moment
+                    if (!alphaCheck || val != 0)
+                    {
+                        data[block] = HuesHelper.Color16To32(val) | 0xFF_00_00_00;
+                    }
+                    else
+                    {
+                        data[block] = 0;
+                    }
+                }
+
+                header = reader.ReadUInt32LE();
+            }
+        }
+
+        public struct FrameInfo
+        {
+            public int Num;
+            public short CenterX;
+            public short CenterY;
+            public short Width;
+            public short Height;
+            public uint[] Pixels;
+        }
+
+        public struct SittingInfoData
+        {
+            public SittingInfoData(
+                ushort graphic,
+                sbyte d1,
+                sbyte d2,
+                sbyte d3,
+                sbyte d4,
+                sbyte offsetY,
+                sbyte mirrorOffsetY,
+                bool drawback
+            )
+            {
+                Graphic = graphic;
+                Direction1 = d1;
+                Direction2 = d2;
+                Direction3 = d3;
+                Direction4 = d4;
+                OffsetY = offsetY;
+                MirrorOffsetY = mirrorOffsetY;
+                DrawBack = drawback;
+            }
+
+            public readonly ushort Graphic;
+            public readonly sbyte Direction1,
+                Direction2,
+                Direction3,
+                Direction4;
+            public readonly sbyte OffsetY,
+                MirrorOffsetY;
+            public readonly bool DrawBack;
+
+            public static SittingInfoData Empty = new SittingInfoData();
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct AnimIdxBlock
+        {
+            public uint Position;
+            public uint Size;
+            public uint Unknown;
+        }
+
+        public struct AnimationDirection
+        {
+            public uint Position;
+            public uint Size;
+            public uint UncompressedSize;
+            public CompressionType CompressionType;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        struct UOPAnimationHeader
+        {
+            public ushort Group;
+            public ushort FrameID;
+
+            public ushort Unk0;
+            public ushort Unk1;
+            public ushort Unk2;
+            public ushort Unk3;
+
+            public uint DataOffset;
+        }
+
+        [DebuggerDisplay("FramID: {FrameID}")]
+        struct UOPFrameData
+        {
+            public long Position;
+            public uint PixelOffset;
+            public int FrameID, Group;
+        }
+    }
+
+    public enum AnimationGroups
+    {
+        None = 0,
+        Low,
+        High,
+        People
+    }
+
+    public enum AnimationGroupsType
+    {
+        Monster = 0,
+        SeaMonster,
+        Animal,
+        Human,
+        Equipment,
+        Unknown
+    }
+
+    public enum HighAnimationGroup
+    {
+        Walk = 0,
+        Stand,
+        Die1,
+        Die2,
+        Attack1,
+        Attack2,
+        Attack3,
+        Misc1,
+        Misc2,
+        Misc3,
+        Stumble,
+        SlapGround,
+        Cast,
+        GetHit1,
+        Misc4,
+        GetHit2,
+        GetHit3,
+        Fidget1,
+        Fidget2,
+        Fly,
+        Land,
+        DieInFlight,
+        AnimationCount
+    }
+
+    public enum PeopleAnimationGroup
+    {
+        WalkUnarmed = 0,
+        WalkArmed,
+        RunUnarmed,
+        RunArmed,
+        Stand,
+        Fidget1,
+        Fidget2,
+        StandOnehandedAttack,
+        StandTwohandedAttack,
+        AttackOnehanded,
+        AttackUnarmed1,
+        AttackUnarmed2,
+        AttackTwohandedDown,
+        AttackTwohandedWide,
+        AttackTwohandedJab,
+        WalkWarmode,
+        CastDirected,
+        CastArea,
+        AttackBow,
+        AttackCrossbow,
+        GetHit,
+        Die1,
+        Die2,
+        OnmountRideSlow,
+        OnmountRideFast,
+        OnmountStand,
+        OnmountAttack,
+        OnmountAttackBow,
+        OnmountAttackCrossbow,
+        OnmountSlapHorse,
+        Turn,
+        AttackUnarmedAndWalk,
+        EmoteBow,
+        EmoteSalute,
+        Fidget3,
+        AnimationCount
+    }
+
+    public enum LowAnimationGroup
+    {
+        Walk = 0,
+        Run,
+        Stand,
+        Eat,
+        Unknown,
+        Attack1,
+        Attack2,
+        Attack3,
+        Die1,
+        Fidget1,
+        Fidget2,
+        LieDown,
+        Die2,
+        AnimationCount
+    }
+
+    [Flags]
+    public enum AnimationFlags : uint
+    {
+        None = 0x00000,
+        Unknown1 = 0x00001,
+        Use2IfHittedWhileRunning = 0x00002,
+        IdleAt8Frame = 0x00004,
+        CanFlying = 0x00008,
+        Unknown10 = 0x00010,
+        CalculateOffsetLowGroupExtended = 0x00020,
+        CalculateOffsetByLowGroup = 0x00040,
+        Unknown80 = 0x00080,
+        Unknown100 = 0x00100,
+        Unknown200 = 0x00200,
+        CalculateOffsetByPeopleGroup = 0x00400,
+        Unknown800 = 0x00800,
+        Unknown1000 = 0x01000,
+        Unknown2000 = 0x02000,
+        Unknown4000 = 0x04000,
+        Unknown8000 = 0x08000,
+        UseUopAnimation = 0x10000,
+        Unknown20000 = 0x20000,
+        Unknown40000 = 0x40000,
+        Unknown80000 = 0x80000,
+        Found = 0x80000000
+    }
+
+    public struct EquipConvData : IEquatable<EquipConvData>
+    {
+        public EquipConvData(ushort graphic, ushort gump, ushort color)
+        {
+            Graphic = graphic;
+            Gump = gump;
+            Color = color;
+        }
+
+        public ushort Graphic;
+        public ushort Gump;
+        public ushort Color;
+
+        public override int GetHashCode() => (Graphic, Gump, Color).GetHashCode();
+
+        public override bool Equals(object obj) => obj is EquipConvData v && Equals(v);
+
+        public bool Equals(EquipConvData other) => (Graphic, Gump, Color) == (other.Graphic, other.Gump, other.Color);
+    }
+
+    struct MobTypeInfo
+    {
+        public AnimationGroupsType Type;
+        public AnimationFlags Flags;
+    }
+
+    struct BodyInfo
+    {
+        public ushort Graphic;
+        public ushort Hue;
+    }
+
+    struct BodyConvInfo
+    {
+        public int FileIndex;
+        public AnimationGroupsType AnimType;
+        public ushort Graphic;
+        public ushort Hue = INVALID_HUE;
+        public sbyte MountHeight;
+        public const ushort INVALID_HUE = 0xFF;
+
+        public BodyConvInfo()
+        {
+        }
+    }
+
+    [InlineArray(AnimationsLoader.MAX_ACTIONS)]
+    struct ReplacedAnimArray
+    {
+        private int _a;
+    }
+
+    struct UopInfo
+    {
+        public ReplacedAnimArray ReplacedAnimations;
+    }
+
+    [Flags]
+    public enum BodyConvFlags
+    {
+        Anim1 = 0x1,
+        Anim2 = 0x2,
+        Anim3 = 0x4,
+        Anim4 = 0x8,
+        Anim5 = 0x10,
+    }
+}

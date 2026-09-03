@@ -1,0 +1,321 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
+using ClassicUO.Game;
+using ClassicUO.Game.Data;
+using ClassicUO.Game.GameObjects;
+using ClassicUO.Utility;
+using Microsoft.Xna.Framework;
+
+namespace ClassicUO.LegionScripting;
+
+internal static class Utility
+{
+    private static World _world;
+
+    public static World World
+    {
+        get
+        {
+            if (_world == null)
+                _world = Client.Game.UO.World;
+
+            return _world;
+        }
+    }
+
+    /// <summary>
+    ///
+    /// </summary>
+    /// <param name="gfx">Graphic to match</param>
+    /// <param name="parentContainer">Matches *only* the parent container, not root **Don't use different continer params together**</param>
+    /// <param name="rootContainer"></param>
+    /// <param name="parOrRootContainer"></param>
+    /// <param name="hue">Hue to match</param>
+    /// <param name="groundRange">Distance from player</param>
+    /// <returns></returns>
+    public static List<Item> FindItems
+    (
+        uint gfx = uint.MaxValue, uint parentContainer = uint.MaxValue, uint rootContainer = uint.MaxValue, uint parOrRootContainer = uint.MaxValue, ushort hue = ushort.MaxValue,
+        int groundRange = int.MaxValue
+    )
+    {
+        var list = new List<Item>();
+
+        foreach (Item item in World.Items.Values)
+        {
+            if (gfx != uint.MaxValue && item.Graphic != gfx)
+                continue;
+
+            if (parentContainer != uint.MaxValue && item.Container != parentContainer)
+                continue;
+
+            if (rootContainer != uint.MaxValue && item.BackpackOrRootContainer != rootContainer)
+                continue;
+
+            if (parOrRootContainer != uint.MaxValue && (item.Container != parOrRootContainer && item.BackpackOrRootContainer != parOrRootContainer))
+                continue;
+
+            if (hue != ushort.MaxValue && item.Hue != hue)
+                continue;
+
+            Item root = World.Items.Get(item.BackpackOrRootContainer);
+
+            if (groundRange != int.MaxValue && ((item.Distance > groundRange && root == null) || (root != null && root.Distance > groundRange)))
+                continue;
+
+            list.Add(item);
+        }
+
+        return list;
+    }
+
+    public static uint ContentsCount(Item container)
+    {
+        if (container == null)
+            return 0;
+
+        uint c = 0;
+
+        for (LinkedObject i = container.Items; i != null; i = i.Next)
+            c++;
+
+        return c;
+    }
+
+    public static bool SearchItemNameAndProps(string search, Item item)
+    {
+        if (item == null)
+            return false;
+        
+        if (item.OPLName.ContainsIgnoreCase(search))
+            return true;
+        
+        if (item.OPLData.ContainsIgnoreCase(search))
+            return true;
+        
+        if (item.GetNormalizedName(false).ContainsIgnoreCase(search))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Only includes layers that are items, not things like shop layers
+    /// </summary>
+    /// <param name="name"></param>
+    /// <returns></returns>
+    public static Layer GetItemLayer(string name)
+    {
+        Layer finalLayer = Layer.Invalid;
+
+        switch (name)
+        {
+            case "onehanded": finalLayer = Layer.OneHanded; break;
+            case "twohanded": finalLayer = Layer.TwoHanded; break;
+            case "shoes": finalLayer = Layer.Shoes; break;
+            case "pants": finalLayer = Layer.Pants; break;
+            case "shirt": finalLayer = Layer.Shirt; break;
+            case "helmet": finalLayer = Layer.Helmet; break;
+            case "gloves": finalLayer = Layer.Gloves; break;
+            case "ring": finalLayer = Layer.Ring; break;
+            case "talisman": finalLayer = Layer.Talisman; break;
+            case "necklace": finalLayer = Layer.Necklace; break;
+            case "hair": finalLayer = Layer.Hair; break;
+            case "waist": finalLayer = Layer.Waist; break;
+            case "torso": finalLayer = Layer.Torso; break;
+            case "bracelet": finalLayer = Layer.Bracelet; break;
+            case "face": finalLayer = Layer.Face; break;
+            case "beard": finalLayer = Layer.Beard; break;
+            case "tunic": finalLayer = Layer.Tunic; break;
+            case "earrings": finalLayer = Layer.Earrings; break;
+            case "arms": finalLayer = Layer.Arms; break;
+            case "cloak": finalLayer = Layer.Cloak; break;
+            case "backpack": finalLayer = Layer.Backpack; break;
+            case "robe": finalLayer = Layer.Robe; break;
+            case "skirt": finalLayer = Layer.Skirt; break;
+            case "legs": finalLayer = Layer.Legs; break;
+            case "mount": finalLayer = Layer.Mount; break;
+            case "bank": finalLayer = Layer.Bank; break;
+            default: break;
+        }
+
+            return finalLayer;
+        }
+
+        /// <summary>
+        /// Get string from a Direction
+        /// </summary>
+        /// <param name="direction"></param>
+        /// <returns></returns>
+        public static string GetDirectionString(Direction direction)
+        {
+            switch (direction)
+            {
+                case Direction.North: return "north";
+                case Direction.Right: return "northeast";
+                case Direction.East: return "east";
+                case Direction.Down: return "southeast";
+                case Direction.South: return "south";
+                case Direction.Left: return "southwest";
+                case Direction.West: return "west";
+                case Direction.Running:
+                case Direction.NONE: //Running north for some reason is resulting in NONE, so we'll default it to northwest.
+                case Direction.Up: return "northwest";
+                default: return "none";
+            }
+        }
+
+    /// <summary>
+    /// Get Direction from a string
+    /// </summary>
+    /// <param name="direction"></param>
+    /// <returns></returns>
+    public static Direction GetDirection(string direction)
+    {
+        switch (direction.ToLower())
+        {
+            case "north": return Direction.North;
+
+            case "northeast":
+            case "right": return Direction.Right;
+
+            case "east": return Direction.East;
+
+            case "southeast":
+            case "down": return Direction.Down;
+
+            case "south": return Direction.South;
+
+            case "southwest":
+            case "left": return Direction.Left;
+
+            case "west": return Direction.West;
+
+            case "northwest":
+            case "up": return Direction.Up;
+
+            default: return Direction.NONE;
+        }
+    }
+
+    public static Item FindNearestCorpsePython(int distance, LegionAPI api) => World.Items.Values.Where(c => c.IsCorpse && c.Distance <= distance && !api.OnIgnoreList(c)).OrderBy(c => c.Distance).FirstOrDefault();
+
+    public static uint FindNearestCheckPythonIgnore(ScanTypeObject scanType, LegionAPI api)
+    {
+        int distance = int.MaxValue;
+        uint serial = 0;
+
+        if (scanType == ScanTypeObject.Objects)
+            foreach (Item item in World.Items.Values)
+            {
+                if (item.IsMulti || item.IsDestroyed || !item.OnGround || api.OnIgnoreList(item)) continue;
+
+                if (item.Distance < distance)
+                {
+                    distance = item.Distance;
+                    serial = item.Serial;
+                }
+            }
+        else
+            foreach (Mobile mobile in World.Mobiles.Values)
+            {
+                if (mobile.IsDestroyed || mobile == World.Player || api.OnIgnoreList(mobile)) continue;
+
+                switch (scanType)
+                {
+                    case ScanTypeObject.Party:
+                        if (!World.Party.Contains(mobile)) continue;
+
+                        break;
+
+                    case ScanTypeObject.Followers:
+                        if (!(mobile.IsRenamable && mobile.NotorietyFlag != NotorietyFlag.Enemy)) continue;
+
+                        break;
+
+                    case ScanTypeObject.Hostile:
+                        if (mobile.NotorietyFlag == NotorietyFlag.Ally || mobile.NotorietyFlag == NotorietyFlag.Innocent || mobile.NotorietyFlag == NotorietyFlag.Invulnerable) continue;
+
+                        break;
+                }
+
+                if (mobile.Distance < distance)
+                {
+                    distance = mobile.Distance;
+                    serial = mobile.Serial;
+                }
+            }
+
+        return serial;
+    }
+
+    public static Color GetColorFromHex(string color) => color.FromHtmlHex(Color.Black);
+
+
+
+    /// <summary>
+    ///     Converts the given values into an array of <see cref="LegionAPI.Notoriety" />
+    ///     Throws if any value is not a valid notoriety
+    /// </summary>
+    /// <param name="values"></param>
+    /// <returns>An array of notoriety values in the same order as provided</returns>
+    /// <exception cref="InvalidEnumArgumentException">
+    ///     One or more given values are not valid <see cref="LegionAPI.Notoriety" />
+    /// </exception>
+    public static LegionAPI.Notoriety[] ConvertNotorietyOrThrow(IEnumerable values) =>
+        values is null
+            ? []
+            : (from object item in values select ConvertNotorietyOrThrow(item)).ToArray();
+
+
+    /// <summary>
+    ///     Converts a given value to <see cref="LegionAPI.Notoriety" />.
+    ///     Throws if conversion fails.
+    /// </summary>
+    /// <param name="value">The value to convert</param>
+    /// <returns>The converted notoriety value</returns>
+    /// <exception cref="InvalidEnumArgumentException">The given value is not a valid <see cref="LegionAPI.Notoriety" /></exception>
+    public static LegionAPI.Notoriety ConvertNotorietyOrThrow(object value)
+    {
+        if (!TryConvertToNotoriety(value, out LegionAPI.Notoriety notoriety))
+            throw new InvalidEnumArgumentException(
+                $"Notoriety value '{value}' is not valid");
+
+        return notoriety;
+    }
+
+    /// <summary>
+    ///     Tries to convert a given value to an <see cref="LegionAPI.Notoriety" /> value
+    /// </summary>
+    /// <param name="value">The value to convert</param>
+    /// <param name="notoriety">The conversion result</param>
+    /// <returns>True if the given value is a valid notoriety, false otherwise</returns>
+    public static bool TryConvertToNotoriety(object value, out LegionAPI.Notoriety notoriety)
+    {
+        switch (value)
+        {
+            case LegionAPI.Notoriety n:
+                notoriety = n;
+                return Enum.IsDefined(n);
+
+            case string s:
+                return Enum.TryParse(s, true, out notoriety)
+                       && Enum.IsDefined(notoriety);
+
+            case int i:
+                notoriety = (LegionAPI.Notoriety)i;
+                return Enum.IsDefined(notoriety);
+
+            case uint u:
+                notoriety = (LegionAPI.Notoriety)u;
+                return Enum.IsDefined(notoriety);
+
+            default:
+                notoriety = LegionAPI.Notoriety.Unknown;
+                return false;
+        }
+    }
+}

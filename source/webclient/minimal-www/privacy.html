@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What this install stores</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2214%22%20fill=%22%230d0d0f%22/%3E%3Cpath%20d=%22M13%2010%20h9%20v20%20l19%20-20%20h10%20v44%20h-9%20V34%20L23%2054%20H13%20Z%22%20fill=%22%23ffd43b%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="_pageshell.css">
+<!--
+  Linked from the account-deletion dialog in the client, which said "What we store" and pointed at
+  a page this build does not serve.
+
+  🚨 EVERY ITEM BELOW IS DERIVED FROM THE CODE, NOT DESCRIBED FROM MEMORY: the identities table
+  (sub/name/avatar/seen, db.ts), PROFILE_ALLOWED_FILES (auth.ts -- five files, nothing else) and
+  the erase helper the admin panel and the player's own delete button both call. A privacy page
+  that drifts from the code is worse than none, because it is the one document a reader has no way
+  to check.
+
+  It describes THIS SOFTWARE. Whoever runs the install is the data controller and may have their
+  own obligations on top; the page says so rather than pretending to be their policy.
+-->
+</head>
+<body>
+<div class="wrap">
+  <h1>What this install stores</h1>
+  <p class="sub">This is a self-hosted install of an open-source client. There is no company behind
+    it, no analytics and no third party receiving your data.</p>
+
+  <section>
+    <h2>If you never sign in with Discord</h2>
+    <p>Nothing is stored about you on the server. Your game account belongs to the UO shard, which
+      is separate software; this client only relays your connection to it.</p>
+    <p>Your browser keeps this shard's game files and your local client settings on your own
+      machine. Clearing your browser's site data removes them.</p>
+  </section>
+
+  <section>
+    <h2>If you do sign in with Discord</h2>
+    <p>Discord tells this install three things, and they are all that is kept:</p>
+    <ul>
+      <li>your Discord account id</li>
+      <li>your display name</li>
+      <li>your avatar image reference</li>
+    </ul>
+    <p>Plus the time you were last seen, so an install can tell an abandoned account from an active
+      one.</p>
+    <h3>And your client settings</h3>
+    <p>Once you sign in, the client can sync your settings so they follow you between computers.
+      That is <strong>five files</strong> and the server rejects anything else:</p>
+    <ul>
+      <li><code>macros.xml</code> — your macros</li>
+      <li><code>gumps.xml</code> — your window layout</li>
+      <li><code>infobar.xml</code> — your info bar</li>
+      <li><code>skillsgroups.xml</code> — your skill groupings</li>
+      <li><code>profile.json</code> — your client options</li>
+    </ul>
+    <p>They are the client's own configuration files. Nothing about your character, your gameplay
+      or your conversations is in them, and none of that is stored here: it lives on the UO shard.</p>
+  </section>
+
+  <section>
+    <h2>Deleting it</h2>
+    <p>The delete button in your profile removes your identity, your settings and your synced
+      profile files. It is immediate and cannot be undone.</p>
+    <p>It does <strong>not</strong> delete your character or your account on the UO shard — that is
+      separate software with its own administrators. Ask them.</p>
+    <p class="note">Whoever runs this install can also delete your stored data from their admin
+      panel, and can see the same three fields Discord provided. <strong>They cannot see your
+      password</strong> — this client never receives your shard password in a readable form on the
+      server; it is relayed to the shard as part of the game protocol.</p>
+  </section>
+
+  <section>
+    <h2>Logs</h2>
+    <p>Like any web server, this one writes connection logs — address, time, what was requested.
+      They exist to run the service and are not combined with anything above.</p>
+  </section>
+
+  <section>
+    <h2>Who is responsible</h2>
+    <p>The person or group running this install. The client's authors host nothing and receive
+      nothing. If your jurisdiction gives you rights over your data, they are the ones to ask.</p>
+  </section>
+
+  <a class="back" href="/">&larr; Back to the game</a>
+</div>
+</body>
+</html>

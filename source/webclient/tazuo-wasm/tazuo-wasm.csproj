@@ -1,0 +1,115 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <!-- TazUO WASM bootstrap — Phase 2 skeleton (2026-05-26).
+       Mirror of classicuo-wasm.csproj with paths adjusted to source/tuo/
+       and the AOT whitelist updated to include TazUO-specific runtime
+       assemblies (Myra, FontStashSharp, XNAssets) on top of the
+       CUO-shared subset.
+
+       What's intentionally NOT here yet (per operator 2026-05-26):
+         - IronPython 3.4.2  (LegionScripting Python interpreter)
+         - Microsoft.CodeAnalysis.CSharp.Scripting (Roslyn runtime C#)
+         - Async.IRC.csproj  (raw TCP IRC — won't work in browser)
+         - Vosk 0.3.38        (speech recognition native binary)
+         - Microsoft.Data.Sqlite (LegionScripting persistent vars store)
+       These are stripped via WASM-conditional <ProjectReference Remove>
+       / <PackageReference Remove> blocks inside source/tuo/src/
+       ClassicUO.Client/ClassicUO.Client.csproj — see the
+       'WebClient WASM-fork patches' section at the bottom of that file.
+       To re-enable later: remove the matching Remove lines.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <OverrideHtmlAssetPlaceholders>true</OverrideHtmlAssetPlaceholders>
+
+    <!-- AOT compilation. Same Mercury MT setup as classicuo-wasm:
+         RunAOTCompilation=true, mixed-mode (IL kept alongside),
+         no trim, no dedup, native debug symbols, allow undefined
+         platform-only SDL entries. See classicuo-wasm.csproj for the
+         full rationale on each flag. -->
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <WasmStripILAfterAOT>false</WasmStripILAfterAOT>
+    <!-- Fixed wasm heap for THIS client (see wasm-fna-native-mercury.targets _MemoryFlags):
+         2 GiB — full fileset headroom. 🚨 The value below is the ONLY truth: this comment
+         said "3 GiB" until 2026-07-31 while the number beside it read 2 GiB. The flags are
+         -sINITIAL_MEMORY with ALLOW_MEMORY_GROWTH=0, so this is COMMITTED at boot, not
+         reserved lazily — it is the hard floor for running the client at all. -->
+    <UoWasmMemBytes>2147483648</UoWasmMemBytes>
+    <WasmDedup>false</WasmDedup>
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <EmccCompileOptimizationFlag>-O3</EmccCompileOptimizationFlag>
+    <EmccLinkOptimizationFlag>-O3</EmccLinkOptimizationFlag>
+
+    <WasmNativeStrip>false</WasmNativeStrip>
+    <WasmNativeDebugSymbols>true</WasmNativeDebugSymbols>
+    <WasmRunWasmOpt>false</WasmRunWasmOpt>
+    <WasmAllowUndefinedSymbols>true</WasmAllowUndefinedSymbols>
+
+    <NoWarn>$(NoWarn);IL2026;IL2045;IL2046;IL2055;IL2057;IL2060;IL2062;IL2065;IL2067;IL2070;IL2072;IL2075;IL2077;IL2080;IL2087;IL2090;IL2091;IL2104;IL2111</NoWarn>
+  </PropertyGroup>
+
+  <!-- Same Mercury MT native targets as CUO (shared FNA + sdl shims).
+       The targets file lives at ../wasm-fna-native-mercury.targets and
+       is client-agnostic — both classicuo-wasm and tazuo-wasm import it. -->
+  <Import Project="..\wasm-fna-native-mercury.targets" />
+
+  <!-- Same vendored multi-thread runtime pack override as CUO (Mercury MT
+       patches 7/8/9 etc.). The pack is at ../../../vendor/runtime-pack-
+       multithread, shared between both clients. -->
+  <PropertyGroup>
+    <WasmEnableThreads>true</WasmEnableThreads>
+  </PropertyGroup>
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\..\..\..\vendor\runtime-pack-multithread')">
+    <MicrosoftNetCoreAppRuntimePackDir>$(MSBuildProjectDirectory)\..\..\..\vendor\runtime-pack-multithread</MicrosoftNetCoreAppRuntimePackDir>
+    <MicrosoftNetCoreAppRuntimePackRidDir>$(MicrosoftNetCoreAppRuntimePackDir)\runtimes\browser-wasm</MicrosoftNetCoreAppRuntimePackRidDir>
+  </PropertyGroup>
+
+  <Target Name="UpdateRuntimePack" AfterTargets="ResolveFrameworkReferences"
+          Condition="'$(MicrosoftNetCoreAppRuntimePackDir)' != ''">
+    <ItemGroup>
+      <ResolvedRuntimePack PackageDirectory="$(MicrosoftNetCoreAppRuntimePackDir)"
+                           Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+    <Message Text="[runtime-pack] Using custom runtime pack: $(MicrosoftNetCoreAppRuntimePackDir)" Importance="High" />
+  </Target>
+
+  <!-- AOTWhitelist: same CUO base list + TazUO's runtime assembly name
+       'TazUO' (their ClassicUO.Client.csproj has AssemblyName=TazUO) +
+       Myra (UI framework on the render path for grid containers etc.) +
+       FontStashSharp (font rendering, hot per-frame). XNAssets stays
+       interpreted for now since it's not a per-frame hot path. -->
+  <PropertyGroup>
+    <_AOTWhitelist>|System.Private.CoreLib|mscorlib|netstandard|System.Collections|System.Collections.Concurrent|System.IO.Compression|System.IO.Compression.Brotli|System.Memory|System.Runtime|System.Numerics.Vectors|FNA|ClassicUO.Renderer|ClassicUO.Assets|ClassicUO.IO|ClassicUO.Utility|TazUO|tazuo-wasm|Myra|Myra.FNA.Core|FontStashSharp|</_AOTWhitelist>
+  </PropertyGroup>
+  <Target Name="AOTOnlyWhitelist" BeforeTargets="_WasmAotCompileApp">
+    <ItemGroup>
+      <_AOT_InternalForceInterpretAssemblies
+        Include="@(_WasmAssembliesInternal)"
+        Condition="!$([System.String]::new('$(_AOTWhitelist)').Contains('|%(Filename)|'))" />
+    </ItemGroup>
+    <Message Text="[aot-whitelist] AOT assemblies: @(_WasmAssembliesInternal->'%(Filename)', ', ')" Importance="Low" />
+    <Message Text="[aot-whitelist] Force-interpret: @(_AOT_InternalForceInterpretAssemblies->'%(Filename)', ', ')" Importance="Low" />
+    <Message Text="[aot-whitelist] AOTing @(_WasmAssembliesInternal->Count()) total, force-interpreting @(_AOT_InternalForceInterpretAssemblies->Count())" Importance="High" />
+  </Target>
+
+  <ItemGroup>
+    <StaticWebAssetFingerprintPattern Include="JS" Pattern="*.js" Expression="#[.{fingerprint}]!" />
+  </ItemGroup>
+
+  <Target Name="BypassWasmAOTTrimCheck" BeforeTargets="_WasmAotCompileApp">
+    <PropertyGroup>
+      <PublishTrimmed>true</PublishTrimmed>
+    </PropertyGroup>
+    <Message Text="[mercury] bypassing wasm AOT trim check (PublishTrimmed flipped true for AOT step only)" Importance="High" />
+  </Target>
+
+  <ItemGroup>
+    <!-- Reference TazUO's ClassicUO.Client.csproj instead of CUO's.
+         IsBrowserWasm=true triggers the WASM-fork patch block at the
+         bottom of that csproj (which strips the out-of-scope deps
+         listed at the top of this file). -->
+    <ProjectReference Include="..\..\tuo\src\ClassicUO.Client\ClassicUO.Client.csproj"
+                      Properties="IsBrowserWasm=true" />
+  </ItemGroup>
+</Project>

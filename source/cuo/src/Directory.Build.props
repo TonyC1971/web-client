@@ -1,0 +1,53 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>Preview</LangVersion>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Company>ClassicUO</Company>
+    <Authors>KaRaShO'</Authors>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Copyright>ClassicUO</Copyright>
+    <PackageProjectUrl>https://www.classicuo.eu/</PackageProjectUrl>
+    <Description>An open source implementation of the Ultima Online Classic Client.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IS_DEV_BUILD)' == 'true'">
+    <DefineConstants>$(DefineConstants);DEV_BUILD</DefineConstants>
+  </PropertyGroup>
+
+  <!-- WASM_DEV_TRACE — gates the WasmTrace.W [Conditional] helper.
+       Defined by default for every cuo sub-project that compiles for
+       the wasm host (IsBrowserWasm=true) so dev/diag publishes keep
+       the [cuo-trace] / [zonediag] / [fbo-test] etc. lines visible
+       in DevTools. Production publishes pass `-p:WasmDevTrace=false`
+       (or use `publish-p4-cuo.bat prod`) which skips this define and
+       erases every `WasmTrace.W(...)` call site at compile time —
+       internal trace strings, account names, world coords, packet
+       IDs and gump names stay out of the browser console of the
+       deployed bundle. -->
+  <PropertyGroup Condition="'$(IsBrowserWasm)' == 'true' And '$(WasmDevTrace)' != 'false'">
+    <DefineConstants>$(DefineConstants);WASM_DEV_TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$(TargetFramework.StartsWith('net4'))">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.*" PrivateAssets="All" />
+    <PackageReference Include="System.Buffers" Version="4.5.1" />
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
+    <PackageReference Include="System.Text.Json" Version="7.0.2" />
+    <Reference Include="System.IO.Compression" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\external\FileEmbed\FileEmbed\FileEmbed.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

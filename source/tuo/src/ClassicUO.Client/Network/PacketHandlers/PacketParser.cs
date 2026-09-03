@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: BSD-2-Clause
+
+using System;
+using ClassicUO.Game;
+using ClassicUO.IO;
+using ClassicUO.Utility.Logging;
+
+namespace ClassicUO.Network.PacketHandlers;
+
+internal sealed class PacketParser
+{
+    #region Members
+
+    private readonly PacketHandler[] _handlers = new PacketHandler[0x100];
+
+    // Increased from 4096 to 65536 (64KB) to reduce Array.Resize frequency during packet processing
+    private byte[] _readingBuffer = new byte[65536];
+
+    private readonly CircularBuffer _buffer = new();
+    private readonly CircularBuffer _pluginsBuffer = new();
+
+    #endregion
+
+    #region Singleton
+
+    public static readonly PacketParser Instance = new();
+
+    #endregion
+
+    public PacketParser()
+    {
+        foreach ((uint id, PacketHandler handler) in PacketHandlerRegistry.GetHandlers())
+            AddHandler(id, handler, false);
+    }
+
+    #region Publics
+
+    public int ParsePackets(World world, Span<byte> data)
+    {
+        Append(data, false);
+        return ParsePackets(world, _buffer, true) + ParsePackets(world, _pluginsBuffer, false);
+    }
+
+    public void AddHandler(uint id, PacketHandler handler, bool allowOverride = true)
+    {
+        if (id >= _handlers.Length)
+            throw new ArgumentOutOfRangeException($"A packet handler's ID must be between 0 and {_handlers.Length}");
+
+        if (!allowOverride && _handlers[id] != null)
+            throw new InvalidOperationException($"Handler {id} is already registered");
+
+        _handlers[id] = handler;
+    }
+
+    /// <summary>
+    /// Appends data to the internal reader buffer
+    /// Can be used to 'inject' network traffic
+    /// </summary>
+    /// <param name="data"></param>
+    /// <param name="fromPlugins"></param>
+    public void Append(Span<byte> data, bool fromPlugins)
+    {
+        if (data.IsEmpty)
+            return;
+
+        (fromPlugins ? _pluginsBuffer : _buffer).Enqueue(data);
+    }
+
+    #endregion
+
+    #region Privates
+
+    private int ParsePackets(World world, CircularBuffer stream, bool allowPlugins)
+    {
+        int packetsCount = 0;
+
+        lock (stream)
+        {
+            ref byte[] packetBuffer = ref _readingBuffer;
+
+            while (stream.Length > 0)
+            {
+                if (
+                    !GetPacketInfo(
+                        stream,
+                        stream.Length,
+                        out byte packetID,
+                        out int offset,
+                        out int packetlength
+                    )
+                )
+                {
+                    Log.Warn(
+                        $"Invalid ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
+                    );
+
+                    break;
+                }
+
+                if (stream.Length < packetlength)
+                {
+                    Log.Warn(
+                        $"Need more data ID: {packetID:X2} | off: {offset} | len: {packetlength} | stream.pos: {stream.Length}"
+                    );
+
+                    // need more data
+                    break;
+                }
+
+                while (packetlength > packetBuffer.Length)
+                {
+                    int newSize = packetBuffer.Length * 2;
+                    Log.Warn(
+                        $"PacketHandler buffer resize from {packetBuffer.Length} to {newSize} for packet length {packetlength} (may cause spike)");
+                    Array.Resize(ref packetBuffer, newSize);
+                }
+
+                _ = stream.Dequeue(packetBuffer, 0, packetlength);
+
+                PacketLogger.Default?.Log(packetBuffer.AsSpan(0, packetlength), false);
+
+                if (!allowPlugins || Plugin.ProcessRecvPacket(packetBuffer, ref packetlength))
+                {
+                    AnalyzePacket(world, packetBuffer.AsSpan(0, packetlength), offset);
+
+                    ++packetsCount;
+                }
+            }
+        }
+
+        return packetsCount;
+    }
+
+    private void AnalyzePacket(World world, ReadOnlySpan<byte> data, int offset)
+    {
+        if (data.IsEmpty)
+            return;
+
+        PacketHandler handler = _handlers[data[0]];
+
+        if (handler != null)
+        {
+            var buffer = new StackDataReader(data);
+            buffer.Seek(offset);
+
+#if BROWSER_WASM
+            // v0.7.9 iter 45 instrumentation — log every handler entry
+            // so we can identify which packet ID triggers the
+            // "memory access out of bounds" trap on the game-phase
+            // path. Each `[pkt-debug] PRE id=0xXX len=N` should be
+            // followed by `[pkt-debug] POST id=0xXX`; the missing POST
+            // identifies the trapping handler.
+            if (CUOEnviroment.Debug) Log.Trace($"[pkt-debug] PRE  id=0x{data[0]:X2} len={data.Length}");
+            handler(world, ref buffer);
+            if (CUOEnviroment.Debug) Log.Trace($"[pkt-debug] POST id=0x{data[0]:X2}");
+#else
+            handler(world, ref buffer);
+#endif
+        }
+    }
+
+    private static bool GetPacketInfo(
+        CircularBuffer buffer,
+        int bufferLen,
+        out byte packetID,
+        out int packetOffset,
+        out int packetLen
+    )
+    {
+        if (buffer == null || bufferLen <= 0)
+        {
+            packetID = 0xFF;
+            packetLen = 0;
+            packetOffset = 0;
+
+            return false;
+        }
+
+        packetLen = AsyncNetClient.PacketsTable.GetPacketLength(packetID = buffer[0]);
+        packetOffset = 1;
+
+        if (packetLen == -1)
+        {
+            if (bufferLen < 3)
+                return false;
+
+            byte b0 = buffer[1];
+            byte b1 = buffer[2];
+
+            packetLen = (b0 << 8) | b1;
+            packetOffset = 3;
+        }
+
+        return true;
+    }
+
+    #endregion
+}
