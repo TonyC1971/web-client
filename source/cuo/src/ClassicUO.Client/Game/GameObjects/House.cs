@@ -74,7 +74,24 @@ namespace ClassicUO.Game.GameObjects
                 {
                     Multi component = Components[i];
 
+                    // Bug O25, undone at the one moment it applies: the 192 alpha that
+                    // CHMOF_TRANSPARENT paints during house-design mode has to be released when
+                    // that flag clears, or walls and roof stay translucent until a reload.
+                    //
+                    // 🚨 IT USED TO BE UNDONE IN MultiView.Draw, WHICH BROKE ROOFS. That ran every
+                    // frame for every component of every house and could not distinguish this case
+                    // from a fade in progress — so it also cancelled the roof-hiding fade, and a
+                    // player inside a player-built house never saw the roof go. Restoring it here
+                    // fires once, when the flag actually changes, and touches nothing else.
+                    bool wasTransparent =
+                        (component.State & CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_TRANSPARENT) != 0;
+
                     component.State = component.State & ~(CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_TRANSPARENT | CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_IGNORE_IN_RENDER | CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_VALIDATED_PLACE | CUSTOM_HOUSE_MULTI_OBJECT_FLAGS.CHMOF_INCORRECT_PLACE);
+
+                    if (wasTransparent)
+                    {
+                        component.AlphaHue = 0xFF;
+                    }
 
 
                     if (component.IsCustom)

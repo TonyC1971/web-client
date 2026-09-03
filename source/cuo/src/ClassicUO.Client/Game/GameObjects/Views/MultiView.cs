@@ -57,16 +57,23 @@ namespace ClassicUO.Game.GameObjects
                     AlphaHue = 192;
                     depth -= 0.01f;
                 }
-                else if (AlphaHue != 0xFF)
-                {
-                    // Bug O25: the transparent flag is toggled during
-                    // house-customisation mode. When the user exits
-                    // design mode the STATE flag clears (House.cs:77)
-                    // but there was no else branch here to restore
-                    // AlphaHue = 255, so walls / roof stayed
-                    // permanently 75 %-translucent until a reload.
-                    AlphaHue = 0xFF;
-                }
+                // 🚨 NOTHING RESTORES AlphaHue HERE ANY MORE, AND THAT IS THE FIX.
+                //
+                // This used to carry `else if (AlphaHue != 0xFF) AlphaHue = 0xFF;` for bug O25:
+                // leaving house-design mode clears CHMOF_TRANSPARENT, and the 192 it had applied
+                // was never undone, so walls and roof stayed translucent until a reload. Correct
+                // intent, wrong place — it ran on EVERY draw of EVERY component of EVERY house,
+                // and it could not tell "design mode just ended" from "a fade is in progress".
+                //
+                // The roof-hiding fade is exactly such a fade. Standing inside a player-built
+                // house, ProcessAlpha dropped the roof from 255 to 230 and this line put it back
+                // to 255 on the same frame, so the roof never reached 0, never got culled, and
+                // never disappeared. Measured on 2026-09-03: the fade ran 8624 times per second
+                // with the alpha flat at 255. Static buildings were unaffected because they are
+                // Statics and never come through MultiView, and TazUO was unaffected because it
+                // never had this branch — which is why the bug looked like a custom-house bug.
+                //
+                // O25 is now undone where the flag is cleared instead: House.ClearCustomHouseComponents.
             }
 
             ushort graphic = Graphic;

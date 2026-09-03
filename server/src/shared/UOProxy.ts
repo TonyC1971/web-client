@@ -163,7 +163,7 @@ function resolveMinigameFromReq(req: http.IncomingMessage): string | null {
 // If the log on the NAS shows an older tag, the docker image cache lied.
 // Force a clean rebuild with:
 //   docker compose build proxy --no-cache && docker compose up -d --force-recreate proxy
-export const PROXY_BUILD_TAG = '2026-09-03T-v1.0.36-realign (v1.0.35 shipped a client-side recovery for a poisoned immutable cache that was tested four times against a deliberately poisoned browser and never fired once, so it was removed rather than left looking like a safety net; the client is byte-for-byte what it was before it, and what actually prevents the failure lives in the deploy path instead: never strip an already-served bundle, purge only after the fetcher has deployed, and verify both integrity manifests against the bytes actually served)';
+export const PROXY_BUILD_TAG = '2026-09-03T-v1.0.37-roof (a player-built house never hid its roof: MultiView.Draw restored AlphaHue to opaque on every draw of every house component, for bug O25, and so cancelled the roof-hiding fade that is the only thing hiding what is above you. Measured inside a house: the fade ran 8624 times a second with the alpha flat at 255. O25 is undone where the flag clears instead. Static buildings and TazUO were never affected, which is why it read as a custom-house bug)';
 
 // When ModernUO finishes the auth phase it sends 0x8C and immediately FINs
 // the TCP. The proxy used to react by closing the WS with code 1000 right
