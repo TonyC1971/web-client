@@ -38,6 +38,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { mayReplaceVersion } from './_versionRank.mjs';
 import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -827,13 +828,32 @@ for (const bundle of (WEB_TREE_ONLY ? [] : BUNDLES)) {
     //
     // The WASM is the fork's, so the fork's version is the honest answer. Absent (a self-hoster who
     // built from source and has no release), the file is simply left alone.
+    //
+    // 🚨 BUT IT MAY ONLY EVER MOVE FORWARD, BECAUSE THE MINIMAL NOW HAS A RELEASE TRACK OF ITS OWN.
+    // The reasoning above was right when it was written and stopped being right the day
+    // uonexus-minimal started cutting its own releases: its numbering runs AHEAD of the fork's
+    // (v1.0.46 against the client's v1.0.36 on 2026-09-03), so copying the fork's number over it is
+    // not a resync, it is a ten-release regression. It happened: a web-layer rebuild stamped v1.0.36
+    // over v1.0.46, and the publisher accepted it because its only check is that the two minimal
+    // bundles AGREE — and they had both regressed together. The release went out numbered older than
+    // the bytes it contained.
+    //
+    // Refusing to go backwards keeps the original fix (a frozen version.txt is worse than none)
+    // while making the destructive direction impossible. When the fork legitimately overtakes the
+    // minimal again, the copy resumes on its own.
     {
       const seed = bundle === 'minimal-tuo' ? 'tuo' : 'cuo';
       const src = path.join(REPO, 'client', seed, 'version.txt');
       if (fs.existsSync(src)) {
         const dst = path.join(clientDir, 'version.txt');
         const next = fs.readFileSync(src);
-        if (!fs.existsSync(dst) || !fs.readFileSync(dst).equals(next)) {
+        // The decision lives in its own module so it can be exercised with real values; see the
+        // note there on why a gate reading this file could not do the job.
+        const current = fs.existsSync(dst) ? fs.readFileSync(dst) : null;
+        if (!mayReplaceVersion(current, next)) {
+          log(`  version.txt kept at ${String(fs.readFileSync(dst)).trim()} in ${path.basename(clientDir)}/`
+            + ` — ${seed} is on ${String(next).trim()}, which is older; this bundle releases on its own track`);
+        } else if (!fs.existsSync(dst) || !fs.readFileSync(dst).equals(next)) {
           fs.writeFileSync(dst, next); total++;
           log(`  version.txt -> ${path.basename(clientDir)}/ (${String(next).trim()}, from ${seed})`);
         }
