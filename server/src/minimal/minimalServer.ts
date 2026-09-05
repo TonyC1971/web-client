@@ -126,8 +126,10 @@ export function buildMinimalApp(): Express {
    * disagree about what "unset" means — so it generalised instead. Every value here fails to the
    * behaviour an unconfigured install already had.
    */
-  type AdminSettings = { defaultClient: 'cuo' | 'tuo'; disableDev: boolean; allowClientSwitch: boolean };
-  const DEFAULTS: AdminSettings = { defaultClient: 'cuo', disableDev: false, allowClientSwitch: false };
+  type AdminSettings = { defaultClient: 'cuo' | 'tuo'; disableDev: boolean; allowClientSwitch: boolean;
+                         chunkSnapshotCache: boolean };
+  const DEFAULTS: AdminSettings = { defaultClient: 'cuo', disableDev: false, allowClientSwitch: false,
+                                    chunkSnapshotCache: false };
 
   /**
    * Is a client bundle really installed?
@@ -156,6 +158,12 @@ export function buildMinimalApp(): Express {
         // Default FALSE: an install that never touched this keeps serving exactly one client, which
         // is what it does today. Offering a switch is a decision, not a default.
         allowClientSwitch: raw?.allowClientSwitch === true,
+        // ClassicUO's chunk snapshot cache. Default FALSE, and this one is NOT "keep today's
+        // behaviour" like the others -- it is a deliberate change of it. The cache is a large
+        // performance win and it is also the cause of the open ghost-statics defect, so an install
+        // that never touched this setting runs correct and slower rather than fast and sometimes
+        // missing its scenery. `=== true` strictly: anything unreadable falls to off.
+        chunkSnapshotCache: raw?.chunkSnapshotCache === true,
       };
     } catch { return { ...DEFAULTS }; }   // unset, unreadable or corrupt ⇒ the unconfigured defaults
   };
@@ -435,6 +443,16 @@ export function buildMinimalApp(): Express {
       if (typeof body.disableDev !== 'boolean') { json(res, 400, { error: 'disableDev must be a boolean' }); return; }
       next.disableDev = body.disableDev;
     }
+    if ('chunkSnapshotCache' in body) {
+      if (typeof body.chunkSnapshotCache !== 'boolean') {
+        json(res, 400, { error: 'chunkSnapshotCache must be a boolean' }); return;
+      }
+      // Accepted for a TazUO-only install too, and on purpose: the setting describes what the
+      // ClassicUO bundle should do, and refusing it here would make the panel's answer depend on
+      // which bundles happen to be built right now. TazUO has no such cache, so it is simply inert
+      // there -- see the note next to it in the panel.
+      next.chunkSnapshotCache = body.chunkSnapshotCache;
+    }
 
     try {
       fs.mkdirSync(DATA_PATH, { recursive: true });
@@ -459,6 +477,13 @@ export function buildMinimalApp(): Express {
       // know without an admin session, and it reveals nothing an anonymous visitor cannot already
       // see by asking /tuo/ whether it exists.
       allowClientSwitch: readSettings().allowClientSwitch,
+      // ClassicUO's chunk snapshot cache, OFF unless the operator turned it on.
+      //
+      // 🚨 THE LOADER READS THIS BEFORE THE RUNTIME STARTS. It becomes a .NET environment
+      // variable in a builder chain whose arguments are evaluated when the chain is constructed, so
+      // a value that arrives later is read by nothing and the toggle appears to do nothing at all.
+      // main.js awaits this response at top level for exactly that reason.
+      chunkSnapshotCache: readSettings().chunkSnapshotCache,
       // 🚨 Community-invite link for the landing page's Discord icon. The markup ships three of
       // them as `href="#"` placeholders (the publisher scrubs this install's real invite, correctly
       // -- a published repo must not carry one community's link). Nothing ever rewrote them, so

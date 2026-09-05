@@ -479,8 +479,20 @@ function _recoverFromCorruptAsset(detail) {
       } catch { /* best effort — a diagnostic must never be what breaks an exit */ }
     });
     // Boot-time post-mortem of the PREVIOUS session.
+    //
+    // 🚨 TOP-LEVEL ONLY. localStorage is shared by every document on the origin, and a minigame
+    // boots this same loader INSIDE AN IFRAME while the real client is still running in the parent.
+    // From in there, the parent's live heartbeat looks exactly like a session that ended without a
+    // clean exit — because it has not ended — so opening Minigames accused the player's own running
+    // game of having frozen. Reported by the operator on 2026-09-03: "es muy molesto, no viene a
+    // cuento porque precisamente ha cargado".
+    //
+    // A framed boot cannot tell a dead session from its own parent, so it does not get to judge:
+    // the post-mortem belongs to the tab that owns the keys. The heartbeat below is left alone; only
+    // the verdict is withheld.
+    const _isTopLevel = (() => { try { return window.top === window.self; } catch { return false; } })();
     try {
-      const alive = JSON.parse(localStorage.getItem('uo-alive') || 'null');
+      const alive = _isTopLevel ? JSON.parse(localStorage.getItem('uo-alive') || 'null') : null;
       const clean = Number(localStorage.getItem('uo-clean-exit') || 0);
       if (alive && (!clean || clean < alive.t - 4000)) {
         // 🚨 SAY WHICH OF THE TWO THIS WAS. Both cases used to print "PREVIOUS SESSION ENDED
@@ -5376,6 +5388,33 @@ try {
   }
 } catch {}
 console.log(`[cuo-init] session kind: ${cuoUserKind}`);
+// ChunkSnapshot cache mode, resolved BEFORE the runtime is built.
+//
+// 🚨 THE DEFAULT IS NOW OFF, AND THAT IS A DELIBERATE LOSS OF PERFORMANCE. The cache is
+// worth up to 30 fps on the same build -- the operator measured it -- but it is also the cause of
+// the open ghost-statics defect: a chunk captured while part of its contents had already been freed
+// is stored and reused, and the area comes back missing walls and other static art. Until that is
+// fixed, an install that has expressed no opinion gets the correct picture rather than the fast one.
+// The operator turns it back on per install from /admin (prod: the `chunk-snapshot-cache` runtime
+// flag; minimal: the Chunk snapshot cache card).
+//
+// 🚨 AND IT IS AWAITED HERE, NOT FETCHED LATER, because .withEnvironmentVariable's argument
+// below is evaluated the moment the builder chain is CONSTRUCTED. A value that lands after that is
+// read by nothing at all: the panel would save, the client would report success, and the setting
+// would do nothing -- the failure mode this project has already paid for more than once.
+//
+// Absent, unreadable or an old proxy that does not publish the field all mean OFF: an unknown falls
+// to the side without the defect.
+let cuoSnapshotServerMode = 'off';
+try {
+  const _rc = await fetch('/api/config', { cache: 'no-store', credentials: 'same-origin' });
+  if (_rc.ok) {
+    const _cfg = await _rc.json();
+    if (_cfg && _cfg.chunkSnapshotCache === true) cuoSnapshotServerMode = 'full';
+  }
+} catch { /* keep 'off' */ }
+console.log(`[cuo-init] chunk snapshot cache: ${cuoSnapshotServerMode} (server setting)`);
+
 window.__cuoUserKind = cuoUserKind; // mini-runtime gates Discord-only features (Arena) on this
 
 const { runMain, getAssemblyExports } = await dotnet
@@ -5897,12 +5936,17 @@ const { runMain, getAssemblyExports } = await dotnet
   //   ?teleDiag=1    → re-arm the [tele-*] teleport dump (~300 lines/jump),
   //                    which is now OFF by default for everyone.
   .withEnvironmentVariable('CUO_SNAPSHOT_MODE', (() => {
+    // ?snapshot= still wins over the operator's setting, in BOTH directions. It is the diagnostic
+    // this project hands players and the discriminant the operator uses to tell "it is the cache"
+    // from "it is the fileset", so it has to be able to force the cache ON as well as off -- which
+    // it could not do while 'full' was merely what the absent case fell through to.
     try {
       const v = (new URLSearchParams(location.search).get('snapshot') || '').toLowerCase();
       if (v === 'off' || v === '0' || v === 'none') return 'off';
       if (v === 'mem' || v === 'f1') return 'mem';
-      return 'full';
-    } catch { return 'full'; }
+      if (v === 'full' || v === 'on' || v === '1') return 'full';
+      return cuoSnapshotServerMode;
+    } catch { return cuoSnapshotServerMode; }
   })())
   .withEnvironmentVariable('CUO_TELE_DIAG', (() => {
     try { return new URLSearchParams(location.search).get('teleDiag') === '1' ? '1' : '0'; }

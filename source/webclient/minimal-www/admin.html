@@ -244,6 +244,23 @@
   </section>
 
   <section>
+    <h2>Chunk snapshot cache</h2>
+    <p class="sub">ClassicUO caches decoded map chunks in the browser, so walking back into an area
+      it already knows skips reading the game files again. It is a <strong>large</strong> performance
+      win — an A/B on the same build measured up to 30 more frames per second, and visibly fewer
+      stutters — which is why the switch is here at all.</p>
+    <p class="sub"><strong>It is also the cause of an open defect.</strong> A chunk can be captured
+      while part of its contents has already been freed; that partial copy is stored and reused, and
+      the area comes back missing walls, floors or other static art until the cache is discarded. It
+      is off by default for that reason. Turning it on trades correctness for speed — a fair trade
+      on some installs, and yours to make. Players who hit it can load with
+      <code>?snapshot=off</code> once without waiting for you.</p>
+    <p class="sub">ClassicUO only. TazUO has no such cache, so this changes nothing on
+      <a href="/tuo/">/tuo/</a>. Either way it applies on each player’s next page load.</p>
+    <dl id="snap"><dd class="sub">checking…</dd></dl>
+  </section>
+
+  <section>
     <h2>Services</h2>
     <dl id="svc"><dd class="sub">checking…</dd></dl>
     <p class="note">Discord is optional for players. Unconfigured, sign-in answers 503 and the
@@ -484,6 +501,7 @@
   (function () {
     var cliBox = document.getElementById('cli');
     var devBox = document.getElementById('dev');
+    var snapBox = document.getElementById('snap');
 
     function put(patch, btn, box) {
       btn.disabled = true;
@@ -522,9 +540,9 @@
     ).then(function (st) {
       var tuo = !!(st && st.installed && st.installed.tuo);
       var cuo = !!(st && st.installed && st.installed.cuo);
-      cliBox.textContent = ''; devBox.textContent = '';
+      cliBox.textContent = ''; devBox.textContent = ''; snapBox.textContent = '';
       if (!st) {
-        [cliBox, devBox].forEach(function (b) {
+        [cliBox, devBox, snapBox].forEach(function (b) {
           var d = document.createElement('dd'); d.className = 'sub'; d.textContent = 'unavailable'; b.appendChild(d);
         });
         return;
@@ -571,6 +589,30 @@
       devRow.appendChild(document.createTextNode(' '));
       devRow.appendChild(button('Silenced for players', !!st.disableDev, function (btn) { put({ disableDev: true }, btn, devBox); }));
       devBox.appendChild(devRow);
+
+      /* The two labels say what the install DOES, not what the button would do, so the current
+         state can be read without working out the inverse of a sentence about the other option.
+         The risky one is named for its consequence rather than for the word "on": "Enabled" tells
+         nobody that scenery can go missing. */
+      var snapRow = document.createElement('dd');
+      snapRow.appendChild(button('Off — correct, slower', !st.chunkSnapshotCache, function (btn) {
+        put({ chunkSnapshotCache: false }, btn, snapBox);
+      }));
+      snapRow.appendChild(document.createTextNode(' '));
+      snapRow.appendChild(button('On — faster, may drop static art', !!st.chunkSnapshotCache, function (btn) {
+        put({ chunkSnapshotCache: true }, btn, snapBox);
+      }));
+      snapBox.appendChild(snapRow);
+      if (st.chunkSnapshotCache) {
+        /* Only when it is ON: a warning that is always on screen is wallpaper, and the operator
+           reading this page with the cache off has nothing to act on. */
+        var snapWarn = document.createElement('dd');
+        snapWarn.className = 'sub';
+        snapWarn.textContent = 'The cache is on. If players report missing walls or floors in an '
+          + 'area, that is this: ask them to load once with ?snapshot=off to confirm, then turn it '
+          + 'off here — nothing already stored is read again, and every area is decoded fresh.';
+        snapBox.appendChild(snapWarn);
+      }
     });
   }());
 

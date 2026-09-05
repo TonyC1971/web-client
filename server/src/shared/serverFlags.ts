@@ -39,6 +39,13 @@ export const FLAG_DEFS: FlagDef[] = [
     client: true,
   },
   {
+    key: 'chunk-snapshot-cache',
+    label: 'Chunk snapshot cache (ClassicUO)',
+    description: 'Cache decoded map chunks in the browser so revisited areas skip the .mul read. It is a LARGE win — an A/B on the same build measured up to 30 fps and visibly fewer stutters with it on — but it is also the cause of the open ghost-statics defect: a chunk captured while part of its contents had already been freed is stored and reused, so walls and other static art go missing from an area until the cache is discarded. OFF by default while that is unfixed. ClassicUO only: TazUO has no such cache, so this does nothing on /tuo/.',
+    default: false,
+    client: true,
+  },
+  {
     key: 'nocompress',
     label: 'Pause asset compression',
     description: 'Tell the asset-worker to stop (re)compressing gamefiles to .br on its next poll. Use during a bulk upload; turn back off to resume.',
